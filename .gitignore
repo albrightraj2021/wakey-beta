@@ -1,0 +1,77 @@
+# Python bytecode files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# ML models and large data files
+
+# Database files
+*.db
+*.sqlite3
+*.sqlite
+
+*.bak
+*.mdf
+*.ldf
+
+# IDE-specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs and temporary files
+logs/
+*.log
+*.csv
+temp/
+.coverage
+htmlcov/
+.pytest_cache/
+.cache/
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Training and test data directories
+data/
+training/
+test_data/
+
+# Generated visual reports
+*.png
+*.jpg
+*.jpeg
+*.gif
+!static/*.png
+!static/*.jpg
+!static/*.jpeg
+!static/*.gif

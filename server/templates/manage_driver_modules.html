@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manage Driver Modules - Driver Drowsiness Detection</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css">
+    <style>
+        body {
+            padding-top: 70px;
+            background-color: #f5f5f5;
+        }
+        .content-section {
+            background-color: white;
+            border-radius: 5px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .module-card {
+            transition: transform 0.2s;
+        }
+        .module-card:hover {
+            transform: translateY(-5px);
+        }
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            display: inline-block;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+        .status-active {
+            background-color: #28a745;
+            box-shadow: 0 0 5px #28a745;
+        }
+        .status-inactive {
+            background-color: #dc3545;
+            box-shadow: 0 0 5px #dc3545;
+        }
+        .key-display {
+            font-family: monospace;
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 5px;
+            border: 1px solid #dee2e6;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
+        <div class="container">
+            <a class="navbar-brand" href="/">Driver Drowsiness Detection</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/owner/dashboard">Dashboard</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/register_driver">Register Driver</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/view_alerts">View Alerts</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/manage_driver_modules">Manage Driver Modules</a>
+                    </li>
+                </ul>
+                <ul class="navbar-nav">
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown">
+                            <i class="bi bi-person-circle"></i> {{ session.username }}
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li><a class="dropdown-item" href="/logout">Logout</a></li>
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="row mb-4">
+            <div class="col">
+                <nav aria-label="breadcrumb">
+                    <ol class="breadcrumb">
+                        <li class="breadcrumb-item"><a href="/owner/dashboard">Dashboard</a></li>
+                        <li class="breadcrumb-item active" aria-current="page">Manage Driver Modules</li>
+                    </ol>
+                </nav>
+                <h2>Driver Module Management</h2>
+                <p class="text-muted">Manage and monitor the driver monitoring modules for your fleet</p>
+            </div>
+        </div>
+        
+        <div class="row mb-4">
+            <div class="col">
+                <div class="content-section">
+                    <h3 class="mb-3">Driver Module Status</h3>
+                    
+                    {% if drivers %}
+                        <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+                            {% for driver in drivers %}
+                            <div class="col">
+                                <div class="card h-100 module-card">
+                                    <div class="card-header d-flex justify-content-between align-items-center">
+                                        <div>
+                                            <span class="status-indicator status-inactive" id="status-{{ driver.id }}"></span>
+                                            <span id="status-text-{{ driver.id }}">Checking...</span>
+                                        </div>
+                                        <a href="/view_driver/{{ driver.id }}" class="btn btn-sm btn-outline-secondary">
+                                            <i class="bi bi-eye"></i>
+                                        </a>
+                                    </div>
+                                    <div class="card-body">
+                                        <h5 class="card-title">{{ driver.username }}</h5>
+                                        <p class="card-text">{{ driver.email }}</p>
+                                        <div class="mb-3">
+                                            <small class="text-muted">Last Activity:</small>
+                                            <div id="last-activity-{{ driver.id }}">Checking activity...</div>
+                                        </div>
+                                        <div class="mb-3">
+                                            <small class="text-muted">Risk Level:</small>
+                                            <div id="risk-level-{{ driver.id }}">
+                                                <div class="spinner-border spinner-border-sm" role="status">
+                                                    <span class="visually-hidden">Loading...</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="mb-3">
+                                            <small class="text-muted">Configuration:</small>
+                                            <div class="small mt-1 p-2 bg-light border rounded">
+                                                <p class="mb-1"><strong>Configure the module by running:</strong></p>
+                                                <code>python driver_monitor.py --server http://127.0.0.1:5000/ --driver-id {{ driver.id }} --api-key [API_KEY]</code>
+                                                <p class="mb-0 mt-2 text-muted fst-italic small">Where [API_KEY] is the generated API key from this dashboard</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="card-footer">
+                                        <button class="btn btn-sm btn-primary generate-key-btn" data-id="{{ driver.id }}">
+                                            <i class="bi bi-key"></i> Generate API Key
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-secondary refresh-btn" data-id="{{ driver.id }}">
+                                            <i class="bi bi-arrow-clockwise"></i> Refresh
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <div class="alert alert-info">
+                            <i class="bi bi-info-circle"></i> No drivers have been registered yet.
+                            <a href="/register_driver" class="alert-link">Register a driver</a> to get started.
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- API Key Modal -->
+    <div class="modal fade" id="apiKeyModal" tabindex="-1" aria-labelledby="apiKeyModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="apiKeyModalLabel">API Key Generated</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p>API key for driver authentication has been generated. Please save this key as it will not be shown again.</p>
+                    <div class="key-display" id="apiKeyDisplay"></div>
+                    <div class="alert alert-warning mt-3">
+                        <i class="bi bi-exclamation-triangle"></i> This key provides access to the driver's module. Keep it secure.
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-primary" id="copyKeyBtn">
+                        <i class="bi bi-clipboard"></i> Copy Key
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Set up API key generation buttons
+            const generateKeyButtons = document.querySelectorAll('.generate-key-btn');
+            generateKeyButtons.forEach(button => {
+                button.addEventListener('click', function() {
+                    const driverId = this.getAttribute('data-id');
+                    generateApiKey(driverId);
+                });
+            });
+            
+            // Set up refresh buttons
+            const refreshButtons = document.querySelectorAll('.refresh-btn');
+            refreshButtons.forEach(button => {
+                button.addEventListener('click', function() {
+                    const driverId = this.getAttribute('data-id');
+                    checkModuleStatus(driverId);
+                });
+            });
+            
+            // Set up copy key button
+            document.getElementById('copyKeyBtn').addEventListener('click', function() {
+                const keyText = document.getElementById('apiKeyDisplay').textContent;
+                navigator.clipboard.writeText(keyText).then(() => {
+                    this.innerHTML = '<i class="bi bi-check"></i> Copied!';
+                    setTimeout(() => {
+                        this.innerHTML = '<i class="bi bi-clipboard"></i> Copy Key';
+                    }, 2000);
+                });
+            });
+            
+            // Check status for all drivers initially
+            {% if drivers %}
+                {% for driver in drivers %}
+                    checkModuleStatus({{ driver.id }});
+                    checkRiskLevel({{ driver.id }});
+                {% endfor %}
+            {% endif %}
+        });
+        
+        function generateApiKey(driverId) {
+            fetch(`/api/generate_driver_key/${driverId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Show the API key in a modal
+                    document.getElementById('apiKeyDisplay').textContent = data.api_key;
+                    new bootstrap.Modal(document.getElementById('apiKeyModal')).show();
+                } else {
+                    alert(`Error: ${data.error || 'Failed to generate API key'}`);
+                }
+            })
+            .catch(error => {
+                console.error('Error generating API key:', error);
+                alert('Error generating API key. Please try again.');
+            });
+        }
+        
+        function checkModuleStatus(driverId) {
+            const statusIndicator = document.getElementById(`status-${driverId}`);
+            const statusText = document.getElementById(`status-text-${driverId}`);
+            const lastActivity = document.getElementById(`last-activity-${driverId}`);
+            
+            statusIndicator.className = 'status-indicator';
+            statusText.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div> Checking...';
+            
+            fetch(`/api/driver_module_status/${driverId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        if (data.is_active) {
+                            statusIndicator.className = 'status-indicator status-active';
+                            statusText.textContent = 'Active';
+                            lastActivity.innerHTML = `<strong>Active now</strong> - ${data.total_alerts} alerts detected`;
+                        } else {
+                            statusIndicator.className = 'status-indicator status-inactive';
+                            statusText.textContent = 'Inactive';
+                            
+                            if (data.last_alert) {
+                                const lastAlertDate = new Date(data.last_alert);
+                                lastActivity.innerHTML = `Last active: ${lastAlertDate.toLocaleString()} <br>
+                                                        (${data.minutes_since_last_alert.toFixed(0)} minutes ago)`;
+                            } else {
+                                lastActivity.textContent = 'Never active';
+                            }
+                        }
+                    } else {
+                        statusIndicator.className = 'status-indicator status-inactive';
+                        statusText.textContent = 'Error';
+                        lastActivity.textContent = 'Could not determine status';
+                    }
+                })
+                .catch(error => {
+                    console.error(`Error checking module status for driver ${driverId}:`, error);
+                    statusIndicator.className = 'status-indicator status-inactive';
+                    statusText.textContent = 'Error';
+                    lastActivity.textContent = 'Error checking status';
+                });
+        }
+        
+        function checkRiskLevel(driverId) {
+            const riskElement = document.getElementById(`risk-level-${driverId}`);
+            
+            fetch(`/api/risk_level/${driverId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        const riskLevel = data.risk_level;
+                        const riskLabel = data.risk_label;
+                        let badgeClass = 'bg-success';
+                        
+                        if (riskLevel === 1) badgeClass = 'bg-warning text-dark';
+                        else if (riskLevel === 2) badgeClass = 'bg-orange';
+                        else if (riskLevel === 3) badgeClass = 'bg-danger';
+                        
+                        riskElement.innerHTML = `<span class="badge ${badgeClass}">${riskLabel}</span>`;
+                    } else {
+                        riskElement.innerHTML = '<span class="badge bg-secondary">Unknown</span>';
+                    }
+                })
+                .catch(error => {
+                    console.error(`Error checking risk level for driver ${driverId}:`, error);
+                    riskElement.innerHTML = '<span class="badge bg-secondary">Error</span>';
+                });
+        }
+    </script>
+</body>
+</html>
