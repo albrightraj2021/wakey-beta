@@ -166,24 +166,37 @@
                             <div class="form-check mb-3">
                                 <input class="form-check-input" type="radio" name="faceRecognitionOption" id="faceRecognitionUpload" value="upload">
                                 <label class="form-check-label" for="faceRecognitionUpload">
-                                    <strong>Upload reference photo now</strong>
-                                    <div class="small text-muted">Upload a clear photo of the driver's face</div>
+                                    <strong>Capture reference image now</strong>
+                                    <div class="small text-muted">Take a photo now to use as reference for the driver</div>
                                 </label>
                             </div>
                             
-                            <div id="referencePhotoUpload" style="display: none;">
-                                <div class="mb-3">
-                                    <label for="referencePhoto" class="form-label">Driver Reference Photo</label>
-                                    <input type="file" class="form-control" id="referencePhoto" name="referencePhoto" accept="image/*">
-                                    <div class="form-text">
-                                        Please upload a clear frontal photo of the driver's face in good lighting.
+                            <!-- New webcam capture section -->
+                            <div id="webcamCaptureSection" class="mt-3" style="display: none;">
+                                <div class="card">
+                                    <div class="card-body">
+                                        <h6 class="card-title">Reference Image Capture</h6>
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <div class="mb-3">
+                                                    <video id="webcamVideo" width="320" height="240" class="img-fluid border" style="display: none;"></video>
+                                                    <canvas id="captureCanvas" width="320" height="240" class="img-fluid border" style="display: none;"></canvas>
+                                                    <img id="capturedImage" class="img-fluid border" style="display: none;">
+                                                </div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <div class="d-grid gap-2">
+                                                    <button type="button" id="startWebcamBtn" class="btn btn-primary">Start Camera</button>
+                                                    <button type="button" id="captureImageBtn" class="btn btn-success" style="display: none;">Capture Image</button>
+                                                    <button type="button" id="retakeImageBtn" class="btn btn-secondary" style="display: none;">Retake</button>
+                                                </div>
+                                                <input type="hidden" id="referenceImageData" name="referenceImageData">
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
-                                <div id="photoPreview" class="mt-3 text-center" style="display: none;">
-                                    <h6>Photo Preview</h6>
-                                    <img id="referencePhotoPreview" src="#" alt="Reference photo preview" class="img-fluid rounded" style="max-height: 200px;">
-                                </div>
                             </div>
+                            
                         </div>
                     </div>
                     
@@ -319,6 +332,79 @@
                 e.preventDefault();
                 alert('Please select a reference photo file or choose "Capture on first login".');
             }
+        });
+
+        document.addEventListener('DOMContentLoaded', function() {
+            // Handle radio button change for face recognition options
+            document.querySelectorAll('input[name="faceRecognitionOption"]').forEach(radio => {
+                radio.addEventListener('change', function() {
+                    const webcamSection = document.getElementById('webcamCaptureSection');
+                    if (this.value === 'upload') {
+                        webcamSection.style.display = 'block';
+                    } else {
+                        webcamSection.style.display = 'none';
+                    }
+                });
+            });
+            
+            // Variables for webcam handling
+            const webcamVideo = document.getElementById('webcamVideo');
+            const captureCanvas = document.getElementById('captureCanvas');
+            const capturedImage = document.getElementById('capturedImage');
+            const startWebcamBtn = document.getElementById('startWebcamBtn');
+            const captureImageBtn = document.getElementById('captureImageBtn');
+            const retakeImageBtn = document.getElementById('retakeImageBtn');
+            const referenceImageData = document.getElementById('referenceImageData');
+            let stream = null;
+            
+            // Start webcam
+            startWebcamBtn.addEventListener('click', async () => {
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    webcamVideo.srcObject = stream;
+                    webcamVideo.style.display = 'block';
+                    webcamVideo.play();
+                    
+                    startWebcamBtn.style.display = 'none';
+                    captureImageBtn.style.display = 'block';
+                } catch (err) {
+                    console.error("Error accessing webcam:", err);
+                    alert("Unable to access webcam. Please check permissions.");
+                }
+            });
+            
+            // Capture image
+            captureImageBtn.addEventListener('click', () => {
+                captureCanvas.getContext('2d').drawImage(webcamVideo, 0, 0, captureCanvas.width, captureCanvas.height);
+                const imageData = captureCanvas.toDataURL('image/jpeg');
+                capturedImage.src = imageData;
+                capturedImage.style.display = 'block';
+                webcamVideo.style.display = 'none';
+                
+                captureImageBtn.style.display = 'none';
+                retakeImageBtn.style.display = 'block';
+                
+                // Store image data in hidden field
+                referenceImageData.value = imageData;
+            });
+            
+            // Retake image
+            retakeImageBtn.addEventListener('click', () => {
+                capturedImage.style.display = 'none';
+                webcamVideo.style.display = 'block';
+                
+                retakeImageBtn.style.display = 'none';
+                captureImageBtn.style.display = 'block';
+                
+                referenceImageData.value = '';
+            });
+            
+            // Clean up when form is submitted
+            document.querySelector('form').addEventListener('submit', () => {
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                }
+            });
         });
     </script>
 </body>

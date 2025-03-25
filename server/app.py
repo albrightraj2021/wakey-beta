@@ -284,8 +284,23 @@ def detect_drowsiness_in_feed(user_id=None, db_connection_func=None):
         return
     
     try:
-        # Initialize our improved drowsiness detector
-        detector = DrowsinessDetector()
+        # Get reference image for user if available
+        reference_image = None
+        if user_id and db_connection_func:
+            try:
+                conn = db_connection_func()
+                cursor = conn.cursor()
+                cursor.execute("SELECT reference_image FROM users WHERE id = %s", (user_id,))
+                result = cursor.fetchone()
+                if result and result[0]:
+                    reference_image = result[0]
+                cursor.close()
+                conn.close()
+            except Exception as e:
+                print(f"Error retrieving reference image: {e}")
+        
+        # Initialize our improved drowsiness detector with reference image
+        detector = DrowsinessDetector(reference_image)
         print("Advanced drowsiness detector initialized")
         
         # Record when last alert was triggered to avoid alert spam

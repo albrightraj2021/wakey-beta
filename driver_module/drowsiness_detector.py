@@ -5,11 +5,14 @@ import time
 from datetime import datetime
 import dlib
 import pygame  # Added for sound support
+import base64
+from io import BytesIO
+from PIL import Image
 
 class DrowsinessDetector:
     """Advanced drowsiness detection using facial landmarks"""
     
-    def __init__(self):
+    def __init__(self, reference_image=None):
         # Load facial landmark predictor
         self.detector = dlib.get_frontal_face_detector()
         landmarks_path = os.path.join(os.path.dirname(__file__), 'shape_predictor_68_face_landmarks.dat')
@@ -36,6 +39,15 @@ class DrowsinessDetector:
         # Add eye detector for additional verification
         self.eye_detector = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye_tree_eyeglasses.xml')
         
+        # Initialize MobileNetSSD model for face recognition
+        self.face_recognizer = self.initialize_face_recognition()
+        
+        # Store reference image for authentication
+        self.reference_image = None
+        self.reference_face_encoding = None
+        if reference_image:
+            self.set_reference_image(reference_image)
+        
         self.use_dlib = True  # Start with dlib, fallback to OpenCV if needed
         
         # Add low-light parameters
@@ -57,6 +69,12 @@ class DrowsinessDetector:
         self.MOR_THRESHOLD = 0.30  # Adjusted threshold for yawning detection
         self.CONSECUTIVE_FRAMES = 15
         self.DROWSY_FRAME_THRESHOLD = 20
+        
+        # Authentication settings
+        self.face_match_threshold = 0.6  # Threshold for face matching confidence
+        self.authenticated = False
+        self.auth_attempts = 0
+        self.max_auth_attempts = 5
         
         # Initialize counters
         self.ear_counter = 0
@@ -83,7 +101,81 @@ class DrowsinessDetector:
         
         # Store outputs
         self.detections = []
-    
+
+    def initialize_face_recognition(self):
+        """Initialize face recognition using OpenCV's face recognizer"""
+        # For simplicity, we'll use OpenCV's built-in face recognition
+        # In production, you might want to use a more sophisticated method like FaceNet
+        face_recognizer = cv2.face.LBPHFaceRecognizer_create()
+        return face_recognizer
+        
+    def set_reference_image(self, reference_image):
+        """Set reference image for face authentication"""
+        try:
+            # Handle base64 encoded image
+            if isinstance(reference_image, str) and reference_image.startswith('data:image'):
+                # Extract the base64 data
+                image_data = reference_image.split(',')[1]
+                # Decode base64 to image
+                image = Image.open(BytesIO(base64.b64decode(image_data)))
+                # Convert PIL Image to numpy array for OpenCV
+                self.reference_image = np.array(image)
+                self.reference_image = cv2.cvtColor(self.reference_image, cv2.COLOR_RGB2BGR)
+                
+                # Extract face encoding from reference image
+                gray = cv2.cvtColor(self.reference_image, cv2.COLOR_BGR2GRAY)
+                faces = self.detector(gray, 1)
+                
+                if len(faces) > 0:
+                    # Get largest face
+                    largest_face = max(faces, key=lambda rect: rect.width() * rect.height())
+                    face_roi = gray[largest_face.top():largest_face.bottom(), largest_face.left():largest_face.right()]
+                    
+                    # Train recognizer with this face
+                    self.face_recognizer.train([face_roi], np.array([1]))
+                    
+                    print("Reference face processed successfully")
+                    return True
+                else:
+                    print("No face detected in reference image")
+            else:
+                print("Invalid reference image format")
+        except Exception as e:
+            print(f"Error processing reference image: {e}")
+        
+        return False
+        
+    def authenticate_driver(self, frame):
+        """Verify driver's identity against reference image"""
+        if self.reference_image is None:
+            # No reference image, consider authenticated
+            return True
+            
+        # Authentication logic
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = self.detector(gray, 1)
+            
+            if len(faces) == 0:
+                return False
+                
+            largest_face = max(faces, key=lambda rect: rect.width() * rect.height())
+            face_roi = gray[largest_face.top():largest_face.bottom(), largest_face.left():largest_face.right()]
+            
+            # Resize to match training data if necessary
+            face_roi = cv2.resize(face_roi, (100, 100))
+            
+            # Predict using face recognizer
+            label, confidence = self.face_recognizer.predict(face_roi)
+            
+            # Lower confidence means better match in LBPH
+            is_match = confidence < 70  # Threshold for confidence
+            
+            return is_match
+        except Exception as e:
+            print(f"Authentication error: {e}")
+            return False
+
     def load_sound(self, filename):
         """Load a sound file, with fallback to default if file not found"""
         filepath = os.path.join(self.sounds_dir, filename)
@@ -409,6 +501,27 @@ class DrowsinessDetector:
     
     def process_frame(self, frame):
         """Process a video frame for drowsiness detection"""
+        # Check authentication if reference image exists
+        if self.reference_image is not None and not self.authenticated:
+            # Try to authenticate
+            if self.auth_attempts < self.max_auth_attempts:
+                self.authenticated = self.authenticate_driver(frame)
+                self.auth_attempts += 1
+                
+                # If not authenticated, show message
+                if not self.authenticated:
+                    viz_frame = frame.copy()
+                    message = f"Driver authentication failed. Attempt {self.auth_attempts}/{self.max_auth_attempts}"
+                    cv2.putText(viz_frame, message, (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    return viz_frame, False, None
+            else:
+                # Max attempts reached, show error
+                viz_frame = frame.copy()
+                message = "Authentication failed. Please contact administrator."
+                cv2.putText(viz_frame, message, (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                return viz_frame, False, None
+        
+        # Continue with existing processing
         # Make a copy of the frame for visualization
         viz_frame = frame.copy()
         timestamp = time.time()
