@@ -176,24 +176,32 @@ def register_driver():
             conn.close()
             return render_template('register_driver.html', error="Username already exists")
         
-        # Process reference photo if uploaded
+        # Process reference photo - handle both file upload and webcam capture
         reference_image = None
         if require_face_recognition and face_recognition_option == 'upload':
-            file = request.files.get('referencePhoto')
-            if file and file.filename:
-                try:
-                    # Read file data
-                    img_data = file.read()
-                    
-                    # Convert to base64 for database storage
-                    reference_image = base64.b64encode(img_data).decode('utf-8')
-                    
-                except Exception as e:
-                    print(f"Error processing reference photo: {e}")
-                    return render_template('register_driver.html', error=f"Error processing photo: {str(e)}")
-            elif face_recognition_option == 'upload':
-                # If upload option was selected but no file was provided
-                return render_template('register_driver.html', error="Please select a reference photo file or choose 'Capture on first login'")
+            # First check if we have webcam captured image data
+            webcam_image_data = request.form.get('referenceImageData')
+            if webcam_image_data and webcam_image_data.startswith('data:image'):
+                # Use the webcam image directly (it's already base64 encoded)
+                reference_image = webcam_image_data
+                print("Using webcam-captured reference image")
+            else:
+                # Fall back to file upload if no webcam data
+                file = request.files.get('referencePhoto')
+                if file and file.filename:
+                    try:
+                        # Read file data
+                        img_data = file.read()
+                        
+                        # Convert to base64 for database storage
+                        reference_image = base64.b64encode(img_data).decode('utf-8')
+                        
+                    except Exception as e:
+                        print(f"Error processing reference photo: {e}")
+                        return render_template('register_driver.html', error=f"Error processing photo: {str(e)}")
+                elif face_recognition_option == 'upload' and not webcam_image_data:
+                    # If upload option was selected but no file or webcam data provided
+                    return render_template('register_driver.html', error="Please capture a photo or select a reference photo file")
         
         # Insert new driver
         hashed_password = generate_password_hash(driver_password)
@@ -522,6 +530,7 @@ def view_alerts():
             JOIN users u ON a.user_id = u.id
             JOIN driver_owner do ON u.id = do.driver_id
             WHERE do.owner_id = %s
+            AND a.alert_type != 'status_update'
         """
         params = [session['user_id']]
 
@@ -541,6 +550,7 @@ def view_alerts():
             FROM alerts a
             JOIN users u ON a.user_id = u.id
             WHERE a.user_id = %s
+            AND a.alert_type != 'status_update'
         """
         params = [session['user_id']]
         
@@ -568,21 +578,23 @@ def api_recent_alerts():
     cursor = conn.cursor(dictionary=True)
     
     if session['user_type'] == 'owner':
-        # Get alerts for all drivers associated with this owner
+        # Get alerts for all drivers associated with this owner, filtering out status updates
         cursor.execute("""
             SELECT a.*, u.username 
             FROM alerts a
             JOIN users u ON a.user_id = u.id
             JOIN driver_owner do ON u.id = do.driver_id
             WHERE do.owner_id = %s
+            AND a.alert_type != 'status_update'
             ORDER BY a.timestamp DESC
             LIMIT 5
         """, (session['user_id'],))
     else:
-        # Get alerts for current driver
+        # Get alerts for current driver, filtering out status updates
         cursor.execute("""
             SELECT * FROM alerts 
             WHERE user_id = %s
+            AND alert_type != 'status_update'
             ORDER BY timestamp DESC 
             LIMIT 5
         """, (session['user_id'],))
@@ -612,6 +624,7 @@ def api_alert_count():
             FROM alerts a
             JOIN driver_owner do ON a.user_id = do.driver_id
             WHERE do.owner_id = %s
+            AND a.alert_type != 'status_update'
         """, (session['user_id'],))
     else:
         # Count alerts for current driver
@@ -619,6 +632,7 @@ def api_alert_count():
             SELECT COUNT(*) as count 
             FROM alerts 
             WHERE user_id = %s
+            AND alert_type != 'status_update'
         """, (session['user_id'],))
     
     result = cursor.fetchone()
@@ -688,6 +702,7 @@ def api_export_alerts():
             JOIN users u ON a.user_id = u.id
             JOIN driver_owner do ON u.id = do.driver_id
             WHERE do.owner_id = %s
+            AND a.alert_type != 'status_update'
         """
         params = [session['user_id']]
     else:
@@ -696,6 +711,7 @@ def api_export_alerts():
             FROM alerts a
             JOIN users u ON a.user_id = u.id
             WHERE a.user_id = %s
+            AND a.alert_type != 'status_update'
         """
         params = [session['user_id']]
     
@@ -766,6 +782,7 @@ def driver_alerts(driver_id):
     cursor.execute("""
         SELECT * FROM alerts
         WHERE user_id = %s
+        AND alert_type != 'status_update'
         ORDER BY timestamp DESC    
     """, (driver_id,))
     alerts = cursor.fetchall()

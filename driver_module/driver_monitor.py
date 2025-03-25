@@ -160,19 +160,12 @@ def main():
             if data_sender and active_driver_id and (current_time - last_risk_update_time) > risk_update_interval:
                 # Only send if risk level has changed or it's been a while since the last update
                 if risk_level != last_sent_risk_level or (current_time - last_risk_update_time) > 30:
-                    status_update = {
-                        "type": "status_update",
-                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                        "risk_level": risk_level,
-                        "risk_label": risk_labels[risk_level]
-                    }
-                    queued_alerts.append(status_update)
+                    # Send risk level update directly instead of queuing it as an alert
+                    send_direct_risk_update(args.server, active_driver_id, risk_level, risk_labels[risk_level], args.api_key)
+                    # Store data about this driver's status without adding to alert queue
                     last_risk_update_time = current_time
                     last_sent_risk_level = risk_level
-                    print(f"Status update queued with risk level: {risk_labels[risk_level]}")
-                    
-                    # Send risk level update directly - now API key is optional
-                    send_direct_risk_update(args.server, active_driver_id, risk_level, risk_labels[risk_level], args.api_key)
+                    print(f"Status update sent directly with risk level: {risk_labels[risk_level]} for driver: {active_driver_username}")
                 
             # Send batched alerts periodically
             if queued_alerts and (current_time - last_send_time) > send_interval:

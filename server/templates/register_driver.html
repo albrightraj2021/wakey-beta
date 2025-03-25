@@ -375,17 +375,28 @@
             
             // Capture image
             captureImageBtn.addEventListener('click', () => {
+                // Make sure the canvas is the same size as the video
+                captureCanvas.width = webcamVideo.videoWidth;
+                captureCanvas.height = webcamVideo.videoHeight;
+                
+                // Draw the video frame to the canvas
                 captureCanvas.getContext('2d').drawImage(webcamVideo, 0, 0, captureCanvas.width, captureCanvas.height);
+                
+                // Convert to data URL (base64)
                 const imageData = captureCanvas.toDataURL('image/jpeg');
+                
+                // Show the captured image
                 capturedImage.src = imageData;
                 capturedImage.style.display = 'block';
                 webcamVideo.style.display = 'none';
                 
+                // Update UI buttons
                 captureImageBtn.style.display = 'none';
                 retakeImageBtn.style.display = 'block';
                 
                 // Store image data in hidden field
                 referenceImageData.value = imageData;
+                console.log("Image captured successfully"); // Debug info
             });
             
             // Retake image
@@ -396,6 +407,7 @@
                 retakeImageBtn.style.display = 'none';
                 captureImageBtn.style.display = 'block';
                 
+                // Clear the stored image data
                 referenceImageData.value = '';
             });
             
@@ -405,6 +417,9 @@
                     stream.getTracks().forEach(track => track.stop());
                 }
             });
+
+            // Clean up unused functions and references
+            // ...existing code...
         });
     </script>
 </body>
