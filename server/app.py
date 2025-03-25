@@ -1206,6 +1206,63 @@ def download_driver_module():
         print(f"Error creating driver module package: {e}")
         return render_template('error.html', error=f"Error: {str(e)}")
 
+# Add new API endpoint to get driver information by ID
+@app.route('/api/driver/<int:driver_id>/info', methods=['GET'])
+def get_driver_info(driver_id):
+    """API endpoint to get information for a specific driver"""
+    
+    # Validate API key if provided
+    auth_header = request.headers.get('Authorization')
+    if (auth_header and auth_header.startswith('Bearer ')):
+        api_key = auth_header.split(' ')[1]
+        # Verify API key is valid
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT id FROM users WHERE api_key = %s", (api_key,))
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        
+        if not result:
+            return jsonify({'success': False, 'error': 'Invalid API key'}), 401
+    
+    try:
+        # Get driver information
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("""
+            SELECT id, username, email, first_name, last_name, risk_level
+            FROM users
+            WHERE id = %s AND user_type = 'driver'
+        """, (driver_id,))
+        
+        driver = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        
+        if not driver:
+            return jsonify({'success': False, 'error': 'Driver not found'}), 404
+            
+        # Format the response
+        driver_info = {
+            'id': driver['id'],
+            'username': driver['username'],
+            'email': driver['email'],
+            'first_name': driver.get('first_name', ''),
+            'last_name': driver.get('last_name', ''),
+            'risk_level': driver.get('risk_level', 0)
+        }
+        
+        return jsonify({
+            'success': True,
+            'driver': driver_info
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in get_driver_info endpoint: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 # Add new API endpoint for driver module to get reference image
 @app.route('/api/driver_model/<int:driver_id>', methods=['GET'])
 def get_driver_model(driver_id):
@@ -1439,6 +1496,61 @@ def get_risk_level(driver_id):
         
     except Exception as e:
         print(f"Error getting risk level: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# Add new endpoint to provide driver reference images
+@app.route('/api/driver_references', methods=['GET'])
+def api_driver_references():
+    """API endpoint to provide reference images for all drivers with face recognition enabled"""
+    
+    # Validate API key if provided
+    auth_header = request.headers.get('Authorization')
+    if (auth_header and auth_header.startswith('Bearer ')):
+        api_key = auth_header.split(' ')[1]
+        # Verify API key is valid for any driver
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT id FROM users WHERE api_key = %s AND user_type = 'driver'", (api_key,))
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        
+        if not result:
+            return jsonify({'success': False, 'error': 'Invalid API key'}), 401
+    
+    try:
+        # Get all drivers with reference images
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Only return drivers with reference images
+        cursor.execute("""
+            SELECT id, username, reference_image
+            FROM users
+            WHERE user_type = 'driver' AND reference_image IS NOT NULL
+        """)
+        
+        drivers = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        # Filter out drivers without reference images
+        drivers_with_images = []
+        for driver in drivers:
+            if driver.get('reference_image'):
+                drivers_with_images.append({
+                    'id': driver['id'],
+                    'username': driver['username'],
+                    'reference_image': driver['reference_image']
+                })
+        
+        return jsonify({
+            'success': True,
+            'drivers': drivers_with_images
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in driver_references endpoint: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == '__main__':
