@@ -50,6 +50,30 @@
         .retry-btn:hover {
             opacity: 1;
         }
+        .face-outline-container {
+            position: relative;
+            display: inline-block;
+        }
+        .face-outline {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 220px;
+            height: 300px;
+            border: 2px dashed #007bff;
+            border-radius: 120px 120px 80px 80px;
+            opacity: 0.7;
+            pointer-events: none;
+        }
+        #video-container {
+            margin-bottom: 30px;
+        }
+        #captured-photo {
+            max-width: 100%;
+            height: auto;
+            border: 1px solid #ddd;
+        }
     </style>
 </head>
 <body>
@@ -70,12 +94,40 @@
     </nav>
 
     <div class="container">
+        <div class="row mb-4">
+            <div class="col">
+                <h2>Reference Photo Capture</h2>
+                <div class="alert alert-info">
+                    <h5><i class="bi bi-info-circle"></i> Important Instructions:</h5>
+                    <ul>
+                        <li>Ensure good lighting on your face (avoid backlighting)</li>
+                        <li>Remove glasses, hats, or other face coverings</li>
+                        <li>Look directly at the camera</li>
+                        <li>Keep a neutral expression</li>
+                        <li>Try to match the position of the face outline</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        
         <div class="capture-container">
             <h2 class="mb-4">Capture Reference Photo</h2>
             
             <div class="alert alert-info">
                 <i class="bi bi-info-circle"></i> This photo will be used to authenticate you in the driver monitoring system.
                 Please ensure your face is clearly visible and well-lit.
+            </div>
+            
+            <div id="video-container" class="text-center">
+                <div class="face-outline-container">
+                    <video id="video" width="640" height="480" autoplay class="rounded"></video>
+                    <div class="face-outline"></div>
+                </div>
+                <div class="mt-3">
+                    <button id="capture" class="btn btn-primary btn-lg">
+                        <i class="bi bi-camera"></i> Capture Reference Photo
+                    </button>
+                </div>
             </div>
             
             <div class="text-center mb-4">
@@ -183,6 +235,9 @@
                 // Pause video
                 video.pause();
                 video.style.display = 'none';
+                
+                // After capturing, add this:
+                checkFaceDetected(dataURL);
             });
             
             // Retry button click handler
@@ -205,6 +260,45 @@
                     alert('Please capture a photo first.');
                 }
             });
+            
+            // Add face detection to verify quality
+            function checkFaceDetected(imgData) {
+                // Create a temporary image element
+                const img = new Image();
+                img.src = imgData;
+                
+                img.onload = function() {
+                    // Create canvas and draw image
+                    const canvas = document.createElement('canvas');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0);
+                    
+                    // Use browser's FaceDetector API if available
+                    if ('FaceDetector' in window) {
+                        const faceDetector = new FaceDetector();
+                        faceDetector.detect(canvas)
+                            .then(faces => {
+                                if (faces.length === 0) {
+                                    alert("No face detected in the image. Please try again with better lighting and positioning.");
+                                    resetCapture();
+                                } else if (faces.length > 1) {
+                                    alert("Multiple faces detected. Please ensure only your face is in the frame.");
+                                    resetCapture();
+                                }
+                            })
+                            .catch(e => console.log("Face detection error:", e));
+                    }
+                };
+            }
+            
+            function resetCapture() {
+                document.getElementById('captured-photo').style.display = 'none';
+                document.getElementById('video').style.display = 'block';
+                document.getElementById('capture').style.display = 'block';
+                document.getElementById('confirmation-buttons').style.display = 'none';
+            }
         });
     </script>
 </body>

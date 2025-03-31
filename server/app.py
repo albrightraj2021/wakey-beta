@@ -471,11 +471,36 @@ def capture_reference():
             return render_template('capture_reference.html', error="No image data provided. Please capture a photo.")
         
         try:
-            # Remove the prefix from base64 string (e.g., 'data:image/jpeg;base64,')
-            if ',' in image_data:
-                image_data = image_data.split(',')[1]
+            # Validate the image has a face before saving
+            import face_recognition
+            import numpy as np
+            import base64
+            from io import BytesIO
+            from PIL import Image
             
-            # Save to database
+            # Extract the base64 part
+            if ',' in image_data:
+                image_data_b64 = image_data.split(',')[1]
+            else:
+                image_data_b64 = image_data
+                
+            # Decode and verify face
+            img_bytes = base64.b64decode(image_data_b64)
+            img = Image.open(BytesIO(img_bytes))
+            img_np = np.array(img)
+            
+            # Use face_recognition to validate
+            face_locations = face_recognition.face_locations(img_np)
+            
+            if not face_locations:
+                return render_template('capture_reference.html', 
+                                      error="No face detected in the image. Please try again with better lighting and positioning.")
+            
+            if len(face_locations) > 1:
+                return render_template('capture_reference.html', 
+                                      error="Multiple faces detected. Please ensure only your face is in the frame.")
+            
+            # Save to database - original image_data includes the MIME type prefix
             conn = get_db_connection()
             cursor = conn.cursor()
             
