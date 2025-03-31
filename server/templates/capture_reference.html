@@ -3,208 +3,213 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Capture Reference Photo - Driver Drowsiness Detection</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css">
+    <title>Capture Reference Photo</title>
     <style>
-        body {
-            padding-top: 70px;
-            background-color: #f5f5f5;
-        }
-        .capture-container {
-            max-width: 700px;
+        .container {
+            max-width: 800px;
             margin: 0 auto;
             padding: 20px;
-            background-color: white;
-            border-radius: 5px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
         }
-        #video {
+        #video-container {
+            position: relative;
             width: 100%;
-            border: 1px solid #dee2e6;
-            border-radius: 5px;
-            background-color: #f8f9fa;
+            max-width: 640px;
+            margin: 0 auto;
+        }
+        #webcam {
+            width: 100%;
+            border: 1px solid #ccc;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
         }
         #canvas {
             display: none;
+            width: 100%;
+            border: 1px solid #ccc;
         }
-        .capture-btn {
-            position: relative;
-            overflow: hidden;
+        .capture-controls {
+            margin-top: 20px;
+            text-align: center;
         }
-        #photo-preview {
-            max-width: 100%;
-            border-radius: 5px;
+        button {
+            padding: 10px 20px;
+            margin: 0 10px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #retake-btn, #submit-btn {
             display: none;
+        }
+        .error-message {
+            color: red;
+            text-align: center;
             margin-top: 10px;
         }
-        .preview-container {
-            position: relative;
-        }
-        .retry-btn {
+        .face-guide {
             position: absolute;
-            top: 10px;
-            right: 10px;
-            opacity: 0.7;
-        }
-        .retry-btn:hover {
-            opacity: 1;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 300px;
+            height: 300px;
+            border: 2px dashed #4CAF50;
+            border-radius: 50%;
+            pointer-events: none;
         }
     </style>
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
-        <div class="container">
-            <a class="navbar-brand" href="/">Driver Drowsiness Detection</a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
-                    <li class="nav-item">
-                        <a class="nav-link" href="/logout">Logout</a>
-                    </li>
-                </ul>
-            </div>
-        </div>
-    </nav>
-
     <div class="container">
-        <div class="capture-container">
-            <h2 class="mb-4">Capture Reference Photo</h2>
-            
-            <div class="alert alert-info">
-                <i class="bi bi-info-circle"></i> This photo will be used to authenticate you in the driver monitoring system.
-                Please ensure your face is clearly visible and well-lit.
-            </div>
-            
-            <div class="text-center mb-4">
-                <video id="video" autoplay playsinline></video>
-                <canvas id="canvas"></canvas>
-                
-                <div class="preview-container mt-3">
-                    <img id="photo-preview" class="img-fluid" alt="Captured photo preview">
-                    <button id="retry-button" class="btn btn-sm btn-light retry-btn d-none">
-                        <i class="bi bi-arrow-counterclockwise"></i> Retake
-                    </button>
-                </div>
-            </div>
-            
-            <div class="d-grid gap-2">
-                <button id="capture-button" class="btn btn-primary capture-btn">
-                    <i class="bi bi-camera"></i> Capture Photo
-                </button>
-                
-                <form id="photo-form" method="post">
-                    <input type="hidden" id="image_data" name="image_data">
-                    <button type="submit" id="submit-button" class="btn btn-success w-100 d-none">
-                        <i class="bi bi-check-lg"></i> Use this Photo
-                    </button>
-                </form>
-            </div>
-            
-            <div class="mt-4">
-                <h4>Instructions:</h4>
-                <ol>
-                    <li>Position your face in the center of the camera view</li>
-                    <li>Ensure good lighting conditions</li>
-                    <li>Keep a neutral expression</li>
-                    <li>Click "Capture Photo" when ready</li>
-                    <li>If you're happy with the result, click "Use this Photo"</li>
-                </ol>
-            </div>
+        <h1>Capture Reference Photo</h1>
+        <p>Please position your face in the center of the frame and click "Capture Photo".</p>
+        
+        {% if error %}
+        <div class="error-message">
+            {{ error }}
         </div>
+        {% endif %}
+        
+        <div id="video-container">
+            <video id="webcam" autoplay playsinline></video>
+            <canvas id="canvas"></canvas>
+            <div class="face-guide"></div>
+        </div>
+        
+        <div class="capture-controls">
+            <button id="capture-btn">Capture Photo</button>
+            <button id="retake-btn">Retake Photo</button>
+            <button id="submit-btn">Submit Photo</button>
+        </div>
+        
+        <form id="photo-form" method="POST" style="display: none;">
+            <input type="hidden" name="image_data" id="image-data">
+        </form>
     </div>
-
+    
     <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            const video = document.getElementById('video');
-            const canvas = document.getElementById('canvas');
-            const captureButton = document.getElementById('capture-button');
-            const submitButton = document.getElementById('submit-button');
-            const retryButton = document.getElementById('retry-button');
-            const photoPreview = document.getElementById('photo-preview');
-            const imageData = document.getElementById('image_data');
-            const context = canvas.getContext('2d');
-            let stream = null;
-            
-            // Start video stream
-            async function startVideo() {
-                try {
-                    stream = await navigator.mediaDevices.getUserMedia({
-                        video: {
-                            width: { ideal: 640 },
-                            height: { ideal: 480 },
-                            facingMode: 'user'
-                        },
-                        audio: false
-                    });
-                    video.srcObject = stream;
-                    captureButton.disabled = false;
-                    captureButton.innerHTML = '<i class="bi bi-camera"></i> Capture Photo';
-                } catch (err) {
-                    console.error('Error accessing the camera: ', err);
-                    alert('Failed to access the camera. Please ensure camera permissions are granted.');
-                    captureButton.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Camera Error';
-                    captureButton.disabled = true;
-                }
+        // DOM elements
+        const webcam = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas');
+        const captureBtn = document.getElementById('capture-btn');
+        const retakeBtn = document.getElementById('retake-btn');
+        const submitBtn = document.getElementById('submit-btn');
+        const photoForm = document.getElementById('photo-form');
+        const imageData = document.getElementById('image-data');
+        
+        // Variables
+        let stream = null;
+        
+        // Initialize webcam
+        async function initWebcam() {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        width: { ideal: 640 },
+                        height: { ideal: 480 },
+                        facingMode: 'user'
+                    }
+                });
+                webcam.srcObject = stream;
+                captureBtn.disabled = false;
+                
+                // Enable debug logging
+                console.log('Webcam initialized successfully');
+            } catch (err) {
+                console.error('Error accessing webcam:', err);
+                showError(`Error accessing webcam: ${err.message}`);
             }
-            
+        }
+        
+        // Capture photo
+        function capturePhoto() {
             // Set canvas dimensions to match video
-            function setCanvasDimensions() {
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-            }
+            canvas.width = webcam.videoWidth;
+            canvas.height = webcam.videoHeight;
             
-            // Start the camera
-            startVideo();
+            // Draw current video frame to canvas
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(webcam, 0, 0, canvas.width, canvas.height);
             
-            // Wait for video metadata to load
-            video.addEventListener('loadedmetadata', setCanvasDimensions);
-            
-            // Capture button click handler
-            captureButton.addEventListener('click', function() {
-                // Draw current video frame to canvas
-                context.drawImage(video, 0, 0, canvas.width, canvas.height);
-                
-                // Get image as data URL
-                const dataURL = canvas.toDataURL('image/jpeg');
-                
-                // Set form input value
+            try {
+                // Convert canvas to data URL (JPEG format)
+                const dataURL = canvas.toDataURL('image/jpeg', 0.8);
                 imageData.value = dataURL;
                 
-                // Show preview and submit button
-                photoPreview.src = dataURL;
-                photoPreview.style.display = 'block';
-                submitButton.classList.remove('d-none');
-                retryButton.classList.remove('d-none');
-                captureButton.classList.add('d-none');
+                // Show preview (use canvas as preview)
+                webcam.style.display = 'none';
+                canvas.style.display = 'block';
                 
-                // Pause video
-                video.pause();
-                video.style.display = 'none';
-            });
-            
-            // Retry button click handler
-            retryButton.addEventListener('click', function() {
-                // Hide preview and submit button
-                photoPreview.style.display = 'none';
-                submitButton.classList.add('d-none');
-                retryButton.classList.add('d-none');
-                captureButton.classList.remove('d-none');
+                // Update button visibility
+                captureBtn.style.display = 'none';
+                retakeBtn.style.display = 'inline-block';
+                submitBtn.style.display = 'inline-block';
                 
-                // Resume video
-                video.play();
-                video.style.display = 'block';
-            });
+                console.log('Photo captured successfully. Data URL length:', dataURL.length);
+            } catch (err) {
+                console.error('Error capturing photo:', err);
+                showError(`Error capturing photo: ${err.message}`);
+            }
+        }
+        
+        // Retake photo
+        function retakePhoto() {
+            // Hide canvas, show webcam
+            webcam.style.display = 'block';
+            canvas.style.display = 'none';
             
-            // Handle form submission
-            document.getElementById('photo-form').addEventListener('submit', function(e) {
-                if (!imageData.value) {
-                    e.preventDefault();
-                    alert('Please capture a photo first.');
-                }
-            });
+            // Update button visibility
+            captureBtn.style.display = 'inline-block';
+            retakeBtn.style.display = 'none';
+            submitBtn.style.display = 'none';
+            
+            // Clear image data
+            imageData.value = '';
+        }
+        
+        // Submit photo
+        function submitPhoto() {
+            if (!imageData.value) {
+                showError('No photo captured. Please capture a photo first.');
+                return;
+            }
+            
+            console.log('Submitting photo...');
+            photoForm.submit();
+        }
+        
+        // Show error message
+        function showError(message) {
+            const errorElement = document.querySelector('.error-message') || document.createElement('div');
+            errorElement.className = 'error-message';
+            errorElement.textContent = message;
+            
+            if (!document.querySelector('.error-message')) {
+                document.querySelector('.capture-controls').before(errorElement);
+            }
+        }
+        
+        // Event listeners
+        captureBtn.addEventListener('click', capturePhoto);
+        retakeBtn.addEventListener('click', retakePhoto);
+        submitBtn.addEventListener('click', submitPhoto);
+        
+        // Initialize webcam when page loads
+        window.addEventListener('DOMContentLoaded', () => {
+            captureBtn.disabled = true; // Disable capture button until webcam is ready
+            initWebcam();
+        });
+        
+        // Clean up
+        window.addEventListener('beforeunload', () => {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
         });
     </script>
 </body>

@@ -464,26 +464,32 @@ def capture_reference():
     
     if request.method == 'POST':
         # Get the captured image from the form
-        image_data = request.form['image_data']
+        image_data = request.form.get('image_data', '')
         
         # Ensure we have image data
         if not image_data or 'data:image' not in image_data:
             return render_template('capture_reference.html', error="No image data provided. Please capture a photo.")
         
         try:
-            # Remove the prefix from base64 string (e.g., 'data:image/jpeg;base64,')
-            if ',' in image_data:
-                image_data = image_data.split(',')[1]
-            
-            # Save to database
+            # Save to database - keep the full data URI format including the prefix
             conn = get_db_connection()
             cursor = conn.cursor()
             
+            print(f"Saving reference image for user ID: {session['user_id']}")
             cursor.execute(
                 "UPDATE users SET reference_image = %s WHERE id = %s",
                 (image_data, session['user_id'])
             )
             conn.commit()
+            
+            # Verify the image was saved
+            cursor.execute("SELECT reference_image FROM users WHERE id = %s", (session['user_id'],))
+            result = cursor.fetchone()
+            if result and result[0]:
+                print("Reference image saved successfully")
+            else:
+                print("Warning: Reference image may not have been saved properly")
+                
             cursor.close()
             conn.close()
             
@@ -495,6 +501,9 @@ def capture_reference():
                 
         except Exception as e:
             print(f"Error processing reference image: {e}")
+            # More detailed error for debugging
+            import traceback
+            traceback.print_exc()
             return render_template('capture_reference.html', error=f"Error saving image: {str(e)}")
     
     return render_template('capture_reference.html')
@@ -812,12 +821,28 @@ def reset_password(driver_id):
         conn.close()
         return redirect(url_for('owner_dashboard'))
     
-    # Get driver info
-    cursor.execute("SELECT username FROM users WHERE id = %s", (driver_id,))
+    # Get driver info with password
+    cursor.execute("SELECT id, username, password FROM users WHERE id = %s", (driver_id,))
     driver = cursor.fetchone()
     
     if request.method == 'POST':
-        new_password = request.form['new_password']
+        current_password = request.form.get('current_password', '')
+        new_password = request.form.get('new_password', '')
+        confirm_password = request.form.get('confirm_password', '')
+        
+        # Verify passwords
+        if not check_password_hash(driver['password'], current_password):
+            cursor.close()
+            conn.close()
+            return render_template('reset_password.html', driver=driver, driver_id=driver_id, 
+                                  error="Current password is incorrect")
+        
+        # Check if new password and confirmation match
+        if new_password != confirm_password:
+            cursor.close()
+            conn.close()
+            return render_template('reset_password.html', driver=driver, driver_id=driver_id, 
+                                  error="New passwords do not match")
         
         # Update password
         hashed_password = generate_password_hash(new_password)
@@ -829,8 +854,12 @@ def reset_password(driver_id):
         cursor.close()
         conn.close()
         
-        # Redirect back to driver view with success message
+        # Redirect with success message
         return redirect(url_for('view_driver', driver_id=driver_id))
+    
+    # Remove password from driver data before sending to template
+    if driver and 'password' in driver:
+        driver.pop('password', None)
     
     cursor.close()
     conn.close()
@@ -995,234 +1024,6 @@ def api_driver_authenticate():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
-# Add a new route to manage driver modules
-@app.route('/manage_driver_modules')
-def manage_driver_modules():
-    """Admin page to manage driver modules"""
-    if 'user_id' not in session or session['user_type'] != 'owner':
-        return redirect(url_for('login'))
-        
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
-    try:
-        # Get all drivers associated with this owner
-        cursor.execute("""
-            SELECT u.id, u.username, u.email, 
-                   COALESCE(u.risk_level, 0) as risk_level,
-                   (SELECT MAX(timestamp) FROM alerts WHERE user_id = u.id) as last_alert
-            FROM users u
-            JOIN driver_owner do ON u.id = do.driver_id
-            WHERE do.owner_id = %s AND u.user_type = 'driver'
-        """, (session['user_id'],))
-            
-        drivers = cursor.fetchall()
-    except mysql.connector.Error as err:
-        print(f"Database error: {err}")
-        drivers = []
-        
-    cursor.close()
-    conn.close()
-    
-    return render_template('manage_driver_modules.html', drivers=drivers)
-
-# Add endpoint to generate API key for driver modules
-@app.route('/api/generate_driver_key/<int:driver_id>', methods=['POST'])
-def generate_driver_key(driver_id):
-    """Generate a new API key for a driver module"""
-    if 'user_id' not in session or session['user_type'] != 'owner':
-        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-    
-    # Verify relationship between owner and driver
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("""
-        SELECT EXISTS(
-            SELECT 1 FROM driver_owner 
-            WHERE driver_id = %s AND owner_id = %s
-        ) as is_associated
-    """, (driver_id, session['user_id']))
-    result = cursor.fetchone()
-    if not result or not result['is_associated']:
-        cursor.close()
-        conn.close()
-        return jsonify({'success': False, 'error': 'Not authorized for this driver'}), 403
-    
-    # Generate a new API key - in reality, use a more secure method
-    import secrets
-    api_key = secrets.token_urlsafe(32)
-    
-    # Store the API key in the database
-    # For this example, we'll add an api_key column to the users table if needed
-    try:
-        cursor.execute("SHOW COLUMNS FROM users LIKE 'api_key'")
-        if not cursor.fetchone():
-            cursor.execute("ALTER TABLE users ADD COLUMN api_key VARCHAR(64)")
-        
-        cursor.execute(
-            "UPDATE users SET api_key = %s WHERE id = %s",
-            (api_key, driver_id)
-        )
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        return jsonify({'success': True, 'api_key': api_key})
-    except Exception as e:
-        cursor.close()
-        conn.close()
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# Add endpoint to check driver module status
-@app.route('/api/driver_module_status/<int:driver_id>')
-def driver_module_status(driver_id):
-    """Check the status of a driver module"""
-    if 'user_id' not in session:
-        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-    
-    # Check permissions
-    if session['user_type'] == 'owner':
-        # Owner can check any of their drivers
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        
-        cursor.execute("""
-            SELECT EXISTS(
-                SELECT 1 FROM driver_owner 
-                WHERE driver_id = %s AND owner_id = %s
-            ) as is_associated
-        """, (driver_id, session['user_id']))
-        
-        result = cursor.fetchone()
-        if not result or not result['is_associated']:
-            cursor.close()
-            conn.close()
-            return jsonify({'success': False, 'error': 'Not authorized for this driver'}), 403
-    elif session['user_id'] != driver_id:
-        # Drivers can only check themselves
-        return jsonify({'success': False, 'error': 'Not authorized for this driver'}), 403
-    
-    # For this example, we'll check when the latest alert was recorded
-    # In a real system, the driver module would periodically ping the server with its status
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
-    cursor.execute("""
-        SELECT MAX(timestamp) as last_alert, 
-               COUNT(*) as total_alerts,
-               risk_level
-        FROM alerts a
-        JOIN users u ON a.user_id = u.id
-        WHERE a.user_id = %s
-        GROUP BY u.risk_level
-    """, (driver_id,))
-    
-    result = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    
-    if result and result['last_alert']:
-        last_alert_time = result['last_alert']
-        # Calculate how long ago the last alert was
-        time_diff = datetime.now() - last_alert_time
-        minutes_ago = time_diff.total_seconds() / 60
-        
-        # Consider the module active if there was an alert in the last 15 minutes
-        is_active = minutes_ago < 15
-        
-        return jsonify({
-            'success': True,
-            'is_active': is_active,
-            'last_alert': last_alert_time.isoformat(),
-            'minutes_since_last_alert': round(minutes_ago, 1),
-            'total_alerts': result['total_alerts'],
-            'risk_level': result['risk_level']
-        })
-    else:
-        return jsonify({
-            'success': True,
-            'is_active': False,
-            'message': 'No alerts recorded'
-        })
-
-@app.route('/download_driver_module')
-def download_driver_module():
-    """Endpoint for downloading the driver module package"""
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
-    
-    try:
-        # Import the driver module creation function
-        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        from download_driver import create_driver_module_zip
-        import tempfile
-        
-        # Create a temporary file for the ZIP
-        fd, temp_path = tempfile.mkstemp(suffix='.zip')
-        os.close(fd)
-        
-        # Get server URL
-        server_url = request.url_root.rstrip('/')
-        
-        # If user is a driver, include their ID in the config
-        driver_id = None
-        api_key = None
-        if session.get('user_type') == 'driver':
-            driver_id = session.get('user_id')
-            
-            # Generate an API key if needed
-            conn = get_db_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            cursor.execute("SELECT api_key FROM users WHERE id = %s", (driver_id,))
-            result = cursor.fetchone()
-            
-            if result and result.get('api_key'):
-                api_key = result['api_key']
-            else:
-                # Generate a new API key
-                import secrets
-                api_key = secrets.token_urlsafe(32)
-                
-                # Check if api_key column exists
-                cursor.execute("SHOW COLUMNS FROM users LIKE 'api_key'")
-                if not cursor.fetchone():
-                    cursor.execute("ALTER TABLE users ADD COLUMN api_key VARCHAR(64)")
-                
-                # Save the API key
-                cursor.execute(
-                    "UPDATE users SET api_key = %s WHERE id = %s",
-                    (api_key, driver_id)
-                )
-                conn.commit()
-            
-            cursor.close()
-            conn.close()
-        
-        # Create the ZIP file
-        success = create_driver_module_zip(
-            temp_path, 
-            server_url=server_url,
-            driver_id=driver_id,
-            api_key=api_key
-        )
-        
-        if success:
-            # Create response with the file
-            from flask import send_file
-            return send_file(
-                temp_path,
-                as_attachment=True,
-                download_name='driver_module.zip',
-                mimetype='application/zip'
-            )
-        else:
-            return render_template('error.html', error="Failed to create driver module package.")
-            
-    except Exception as e:
-        print(f"Error creating driver module package: {e}")
-        return render_template('error.html', error=f"Error: {str(e)}")
-
 # Add new API endpoint to get driver information by ID
 @app.route('/api/driver/<int:driver_id>/info', methods=['GET'])
 def get_driver_info(driver_id):
@@ -1333,15 +1134,6 @@ def get_driver_model(driver_id):
     except Exception as e:
         print(f"Error in get_driver_model endpoint: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
-
-# Add endpoint to receive alerts from driver modules
-@app.route('/api/driver_alerts', methods=['POST'])
-def receive_driver_alerts():
-    """API endpoint to receive alert data from driver modules"""
-    try:
-        # Parse the data
-        data = request.json
-        driver_id = data.get('driver_id')
         detection_events = data.get('detection_events', [])
         
         if not driver_id:
@@ -1569,6 +1361,85 @@ def api_driver_references():
     except Exception as e:
         print(f"Error in driver_references endpoint: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+# Add new endpoint for driver module status
+@app.route('/api/driver_module_status/<int:driver_id>', methods=['GET'])
+def api_driver_module_status(driver_id):
+    """API endpoint to get the current status of a driver's monitoring module"""
+    if 'user_id' not in session:
+        return jsonify({"error": "Unauthorized", "success": False}), 401
+    
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    # Check permissions
+    if session['user_type'] == 'owner':
+        # Owner can check any of their drivers
+        cursor.execute("""
+            SELECT EXISTS(
+                SELECT 1 FROM driver_owner 
+                WHERE driver_id = %s AND owner_id = %s
+            ) as is_associated
+        """, (driver_id, session['user_id']))
+        
+        result = cursor.fetchone()
+        if not result or not result['is_associated']:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Not authorized to view this driver", "success": False}), 403
+    elif session['user_type'] == 'driver':
+        # Drivers can only check themselves
+        if driver_id != session['user_id']:
+            return jsonify({"error": "Not authorized to view this driver", "success": False}), 403
+    
+    # Check if driver exists
+    cursor.execute("SELECT id, username, last_login FROM users WHERE id = %s AND user_type = 'driver'", (driver_id,))
+    driver = cursor.fetchone()
+    
+    if not driver:
+        cursor.close()
+        conn.close()
+        return jsonify({"error": "Driver not found", "success": False}), 404
+    
+    # Get latest alert as activity indicator
+    cursor.execute("""
+        SELECT timestamp FROM alerts 
+        WHERE user_id = %s 
+        ORDER BY timestamp DESC 
+        LIMIT 1
+    """, (driver_id,))
+    
+    last_alert = cursor.fetchone()
+    
+    # Check if there's a recent connection from driver module
+    cursor.execute("""
+        SELECT EXISTS(
+            SELECT 1 FROM alerts 
+            WHERE user_id = %s AND timestamp > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+        ) as recent_activity
+    """, (driver_id,))
+    
+    activity = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    
+    # Determine status based on recent activity
+    is_online = activity and activity.get('recent_activity', 0) == 1
+    
+    # Create status response
+    status = {
+        "success": True,
+        "driver_id": driver_id,
+        "username": driver.get('username', ''),
+        "status": "online" if is_online else "offline",
+        "last_activity": last_alert['timestamp'].isoformat() if last_alert else None,
+        "last_login": driver.get('last_login', None)
+    }
+    
+    if status["last_login"] is not None:
+        status["last_login"] = status["last_login"].isoformat()
+    
+    return jsonify(status)
 
 if __name__ == '__main__':
     app.run(debug=True, host="0.0.0.0")
