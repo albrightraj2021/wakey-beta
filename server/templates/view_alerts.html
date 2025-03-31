@@ -101,7 +101,7 @@
                 {% endif %}
             </div>
             <div class="col-auto">
-                <button class="btn btn-success" onclick="exportAlerts()"></button>
+                <button class="btn btn-success" onclick="exportAlerts()">
                     <i class="bi bi-file-earmark-excel"></i> Export to CSV
                 </button>
             </div>
@@ -165,7 +165,7 @@
                                 </td>
                                 <td>{{ alert.timestamp }}</td>
                                 <td>
-                                    <button class="btn btn-sm btn-info" onclick="viewAlertDetails({{ alert.id }})">View Details</button>
+                                    <button class="btn btn-sm btn-info" onclick="viewAlertDetails('{{ alert.id }}')">View Details</button>
                                 </td>
                             </tr>
                             {% endfor %}
