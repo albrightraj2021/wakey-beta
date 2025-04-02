@@ -143,7 +143,6 @@
                 <table class="table table-hover">
                     <thead>
                         <tr>
-                            <th>Alert ID</th>
                             {% if session.user_type == 'owner' %}
                             <th>Driver</th>
                             {% endif %}
@@ -156,7 +155,6 @@
                         {% if alerts %}
                             {% for alert in alerts %}
                             <tr>
-                                <td>{{ alert.id }}</td>
                                 {% if session.user_type == 'owner' %}
                                 <td>{{ alert.username }}</td>
                                 {% endif %}
@@ -171,7 +169,7 @@
                             {% endfor %}
                         {% else %}
                             <tr>
-                                <td colspan="{% if session.user_type == 'owner' %}5{% else %}4{% endif %}" class="text-center">
+                                <td colspan="{% if session.user_type == 'owner' %}4{% else %}3{% endif %}" class="text-center">
                                     No alerts found.
                                 </td>
                             </tr>
@@ -278,8 +276,7 @@
                                     <p class="card-text">
                                         <strong>Date:</strong> ${alertDate.toLocaleDateString()}<br>
                                         <strong>Time:</strong> ${alertDate.toLocaleTimeString()}<br>
-                                        <strong>Driver:</strong> ${data.alert.username || 'Unknown'}<br>
-                                        <strong>Alert ID:</strong> ${data.alert.id}
+                                        <strong>Driver:</strong> ${data.alert.username || 'Unknown'}
                                     </p>
                                 </div>
                             </div>
