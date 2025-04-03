@@ -11,7 +11,9 @@ CREATE TABLE IF NOT EXISTS users (
     user_type ENUM('owner', 'driver') NOT NULL,
     reference_image LONGTEXT,
     registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    risk_level INT DEFAULT 0
+    risk_level INT DEFAULT 0,
+    suspended BOOLEAN DEFAULT FALSE,
+    suspension_message TEXT
 );
 
 -- Driver-Owner relationships

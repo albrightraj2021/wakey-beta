@@ -1612,5 +1612,75 @@ def api_driver_references():
         print(f"Error in driver_references endpoint: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
+# Add these API endpoints to your Flask server
+
+@app.route('/api/toggle_suspension', methods=['POST'])
+def toggle_suspension():
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'error': 'Not authenticated'})
+        
+    data = request.json
+    driver_id = data.get('driver_id')
+    action = data.get('action')
+    message = data.get('message', '')
+    
+    if not driver_id or not action:
+        return jsonify({'success': False, 'error': 'Missing driver_id or action'})
+        
+    # Check if current user is owner of this driver
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute('''
+        SELECT * FROM driver_owner 
+        WHERE driver_id = %s AND owner_id = %s
+    ''', (driver_id, session['user_id']))
+    relationships = cursor.fetchall()  # Use fetchall() to ensure all results are consumed
+    
+    if not relationships:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': 'You are not authorized to manage this driver'})
+    
+    # Update driver suspension status
+    suspended = 1 if action == 'suspend' else 0
+    cursor.execute('''
+        UPDATE users
+        SET suspended = %s, suspension_message = %s
+        WHERE id = %s
+    ''', (suspended, message, driver_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
+    return jsonify({
+        'success': True, 
+        'message': f'Driver {"suspended" if suspended else "unsuspended"} successfully'
+    })
+
+@app.route('/api/check_suspension/<int:driver_id>', methods=['GET'])
+def check_suspension(driver_id):
+    # This endpoint is called by the driver module to check suspension status
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute('''
+        SELECT suspended, suspension_message
+        FROM users
+        WHERE id = %s
+    ''', (driver_id,))
+    result = cursor.fetchall()  # Use fetchall() to ensure all results are consumed
+    cursor.close()
+    conn.close()
+    
+    if not result:
+        return jsonify({'success': False, 'error': 'Driver not found'})
+        
+    # Return the first (and likely only) result
+    driver_data = result[0]
+    return jsonify({
+        'success': True,
+        'suspended': bool(driver_data['suspended']),
+        'message': driver_data['suspension_message'] or ''
+    })
+
 if __name__ == '__main__':
     app.run(debug=True, host="0.0.0.0")

@@ -67,6 +67,9 @@
         .risk-critical {
             background-color: #dc3545;
         }
+        .suspended-row {
+            background-color: #f8d7da;
+        }
     </style>
 </head>
 <body>
@@ -173,7 +176,7 @@
                         </thead>
                         <tbody>
                             {% for driver in drivers %}
-                                <tr id="driver-row-{{ driver.id }}">
+                                <tr id="driver-row-{{ driver.id }}" class="{% if driver.suspended %}suspended-row{% endif %}">
                                     <td>{{ driver.username }}</td>
                                     <td>{{ driver.email }}</td>
                                     <td>
@@ -198,6 +201,15 @@
                                             <a href="/driver_alerts/{{ driver.id }}" class="btn btn-info">
                                                 <i class="bi bi-bell"></i> Alerts
                                             </a>
+                                            <button class="btn {% if driver.suspended %}btn-success{% else %}btn-danger{% endif %} suspension-btn" 
+                                                data-bs-toggle="modal" 
+                                                data-bs-target="#suspensionModal" 
+                                                data-driver-id="{{ driver.id }}" 
+                                                data-driver-name="{{ driver.username }}"
+                                                data-action="{% if driver.suspended %}unsuspend{% else %}suspend{% endif %}">
+                                                <i class="bi {% if driver.suspended %}bi-play-fill{% else %}bi-pause-fill{% endif %}"></i> 
+                                                {% if driver.suspended %}Unsuspend{% else %}Suspend{% endif %}
+                                            </button>
                                         </div>
                                     </td>
                                 </tr>
@@ -226,6 +238,34 @@
                         <span class="visually-hidden">Loading...</span>
                     </div>
                     <p class="mt-2">Loading recent alerts...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Suspension Modal -->
+    <div class="modal fade" id="suspensionModal" tabindex="-1" aria-labelledby="suspensionModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="suspensionModalLabel">Suspend Driver</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="suspensionForm">
+                        <input type="hidden" id="suspensionDriverId" name="driver_id">
+                        <input type="hidden" id="suspensionAction" name="action">
+                        
+                        <div class="mb-3">
+                            <label for="suspensionMessage" class="form-label">Message to Driver:</label>
+                            <textarea class="form-control" id="suspensionMessage" name="message" rows="3" placeholder="Enter message to notify the driver"></textarea>
+                            <div class="form-text">This message will be displayed to the driver and read aloud.</div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="confirmSuspension">Confirm</button>
                 </div>
             </div>
         </div>
@@ -308,12 +348,16 @@
             let activeCount = 0;
             let highRiskCount = 0;
             
-            // Process each driver
+            // Create arrays to track all fetch promises
+            const riskPromises = [];
+            const statusPromises = [];
+            
+            // Process each driver - collect risk level data
             driverRiskElements.forEach(element => {
                 const driverId = element.getAttribute('data-driver-id');
                 
                 // Get risk level
-                fetch(`/api/risk_level/${driverId}`)
+                const riskPromise = fetch(`/api/risk_level/${driverId}`)
                     .then(response => response.json())
                     .then(data => {
                         if (data.success) {
@@ -341,14 +385,16 @@
                         console.error(`Error fetching risk level for driver ${driverId}:`, error);
                         element.textContent = 'Error';
                     });
+                    
+                riskPromises.push(riskPromise);
             });
             
-            // Update driver status
+            // Process each driver status
             driverStatusElements.forEach(element => {
                 const driverId = element.getAttribute('data-driver-id');
                 
                 // Get status
-                fetch(`/api/driver_module_status/${driverId}`)
+                const statusPromise = fetch(`/api/driver_module_status/${driverId}`)
                     .then(response => response.json())
                     .then(data => {
                         if (data.success) {
@@ -361,15 +407,20 @@
                         } else {
                             element.textContent = 'Unknown';
                         }
-                        
-                        // After processing all drivers, update active driver count
-                        document.getElementById('activeDrivers').textContent = activeCount;
-                        document.getElementById('highRiskCount').textContent = highRiskCount;
                     })
                     .catch(error => {
                         console.error(`Error fetching status for driver ${driverId}:`, error);
                         element.textContent = 'Error';
                     });
+                    
+                statusPromises.push(statusPromise);
+            });
+            
+            // Wait for all promises to complete before updating counters
+            Promise.all([...riskPromises, ...statusPromises]).then(() => {
+                // Update counters once all requests are complete
+                document.getElementById('activeDrivers').textContent = activeCount;
+                document.getElementById('highRiskCount').textContent = highRiskCount;
             });
         }
 
@@ -379,6 +430,91 @@
             
             // Update dashboard every 30 seconds
             setInterval(updateDashboardInfo, 30000);
+        });
+
+        // Handle suspension modal
+        document.addEventListener('DOMContentLoaded', function() {
+            const suspensionModal = document.getElementById('suspensionModal');
+            const suspensionButtons = document.querySelectorAll('.suspension-btn');
+            const confirmSuspensionButton = document.getElementById('confirmSuspension');
+            
+            suspensionButtons.forEach(button => {
+                button.addEventListener('click', function() {
+                    const driverId = this.getAttribute('data-driver-id');
+                    const driverName = this.getAttribute('data-driver-name');
+                    const action = this.getAttribute('data-action');
+                    
+                    document.getElementById('suspensionDriverId').value = driverId;
+                    document.getElementById('suspensionAction').value = action;
+                    
+                    const modalTitle = document.getElementById('suspensionModalLabel');
+                    if (action === 'suspend') {
+                        modalTitle.textContent = `Suspend Driver: ${driverName}`;
+                        document.getElementById('suspensionMessage').placeholder = "Enter reason for suspension...";
+                        confirmSuspensionButton.classList.remove('btn-success');
+                        confirmSuspensionButton.classList.add('btn-danger');
+                        confirmSuspensionButton.textContent = 'Suspend Driver';
+                    } else {
+                        modalTitle.textContent = `Unsuspend Driver: ${driverName}`;
+                        document.getElementById('suspensionMessage').placeholder = "Enter message for unsuspension...";
+                        confirmSuspensionButton.classList.remove('btn-danger');
+                        confirmSuspensionButton.classList.add('btn-success');
+                        confirmSuspensionButton.textContent = 'Unsuspend Driver';
+                    }
+                });
+            });
+            
+            confirmSuspensionButton.addEventListener('click', function() {
+                const driverId = document.getElementById('suspensionDriverId').value;
+                const action = document.getElementById('suspensionAction').value;
+                const message = document.getElementById('suspensionMessage').value;
+                
+                fetch('/api/toggle_suspension', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        driver_id: driverId,
+                        action: action,
+                        message: message
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // Close modal
+                        bootstrap.Modal.getInstance(suspensionModal).hide();
+                        
+                        // Update UI
+                        const row = document.getElementById(`driver-row-${driverId}`);
+                        const button = row.querySelector('.suspension-btn');
+                        
+                        if (action === 'suspend') {
+                            row.classList.add('suspended-row');
+                            button.classList.remove('btn-danger');
+                            button.classList.add('btn-success');
+                            button.setAttribute('data-action', 'unsuspend');
+                            button.innerHTML = '<i class="bi bi-play-fill"></i> Unsuspend';
+                        } else {
+                            row.classList.remove('suspended-row');
+                            button.classList.remove('btn-success');
+                            button.classList.add('btn-danger');
+                            button.setAttribute('data-action', 'suspend');
+                            button.innerHTML = '<i class="bi bi-pause-fill"></i> Suspend';
+                        }
+                        
+                        // Show success message
+                        alert(data.message);
+                    } else {
+                        alert('Error: ' + data.error);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('An error occurred while processing your request.');
+                });
+            });
         });
     </script>
 </body>

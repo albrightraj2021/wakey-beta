@@ -58,6 +58,11 @@ def main():
     authentication_interval = 5  # seconds between authentication attempts
     last_authentication_time = 0
     
+    # Add suspension variables
+    is_suspended = False
+    last_suspension_check = 0
+    suspension_check_interval = 30  # Check every 30 seconds
+    
     if active_driver_id is None:
         print("No driver ID provided. Will attempt to automatically authenticate driver.")
         # Fetch available driver reference images
@@ -112,6 +117,47 @@ def main():
             cv2.imshow("Driver Monitor", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
+            continue
+
+        # Check for suspension status periodically
+        if active_driver_id and current_time - last_suspension_check > suspension_check_interval:
+            suspension_status = check_suspension_status(args.server, active_driver_id, args.api_key)
+            if suspension_status['suspended'] != is_suspended:
+                is_suspended = suspension_status['suspended']
+                if is_suspended:
+                    print(f"DRIVER SUSPENDED: {suspension_status['message']}")
+                    # Display suspension message on screen
+                    suspension_frame = create_suspension_message(suspension_status['message'])
+                    cv2.imshow('Driver Monitoring', suspension_frame)
+                    # Play audio message
+                    detector.play_suspension_message(suspension_status['message'])
+                else:
+                    print(f"DRIVER UNSUSPENDED: {suspension_status['message']}")
+                    # Display unsuspension message
+                    unsuspension_frame = create_unsuspension_message(suspension_status['message'])
+                    cv2.imshow('Driver Monitoring', unsuspension_frame)
+                    # Play audio message
+                    detector.play_suspension_message(suspension_status['message'])
+            last_suspension_check = current_time
+
+        # Skip processing if suspended
+        if is_suspended:
+            ret, frame = cap.read()
+            if not ret:
+                print("Failed to grab frame")
+                break
+            
+            # Display suspension message
+            suspension_frame = create_suspension_message("YOU ARE SUSPENDED")
+            cv2.imshow('Driver Monitoring', suspension_frame)
+            
+            # Check for key press to exit
+            key = cv2.waitKey(1)
+            if key == 27:  # ESC key
+                break
+            
+            # Sleep to reduce CPU usage
+            time.sleep(0.1)
             continue
 
         # Only process frames if we have an authenticated driver
@@ -423,6 +469,102 @@ def send_direct_risk_update(server_url, driver_id, risk_level, risk_label, api_k
     except Exception as e:
         print(f"Error sending direct risk level update: {e}")
         return False
+
+def check_suspension_status(server_url, driver_id, api_key=None):
+    """Check if the driver is suspended"""
+    try:
+        headers = {}
+        if api_key:
+            headers['X-API-Key'] = api_key
+            
+        response = requests.get(f"{server_url}/api/check_suspension/{driver_id}", headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                'suspended': data.get('suspended', False),
+                'message': data.get('message', '')
+            }
+        return {'suspended': False, 'message': ''}
+    except Exception as e:
+        print(f"Error checking suspension status: {str(e)}")
+        return {'suspended': False, 'message': ''}
+
+def create_suspension_message(message):
+    """Create an image with the suspension message"""
+    # Create a black background
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    
+    # Add red background for warning
+    cv2.rectangle(frame, (0, 0), (640, 480), (0, 0, 150), -1)
+    
+    # Add suspension text
+    cv2.putText(frame, "DRIVER SUSPENDED", (120, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    
+    # Add the message - handle multi-line messages
+    y_pos = 200
+    for line in message.split('\n'):
+        # Wrap long lines
+        words = line.split(' ')
+        line_parts = []
+        current_line = ""
+        for word in words:
+            test_line = current_line + word + " "
+            # Check if we need to wrap
+            if cv2.getTextSize(test_line, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0][0] > 600:
+                line_parts.append(current_line)
+                current_line = word + " "
+            else:
+                current_line = test_line
+                
+        if current_line:
+            line_parts.append(current_line)
+            
+        for part in line_parts:
+            cv2.putText(frame, part, (50, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            y_pos += 30
+            
+    # Add instruction to contact supervisor
+    cv2.putText(frame, "Contact your supervisor for assistance", (100, 400), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+    
+    return frame
+
+def create_unsuspension_message(message):
+    """Create an image with the unsuspension message"""
+    # Create a black background
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    
+    # Add green background for success
+    cv2.rectangle(frame, (0, 0), (640, 480), (0, 150, 0), -1)
+    
+    # Add unsuspension text
+    cv2.putText(frame, "DRIVER UNSUSPENDED", (120, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    
+    # Add the message - handle multi-line messages
+    y_pos = 200
+    for line in message.split('\n'):
+        # Wrap long lines as in the suspension message function
+        words = line.split(' ')
+        line_parts = []
+        current_line = ""
+        for word in words:
+            test_line = current_line + word + " "
+            if cv2.getTextSize(test_line, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0][0] > 600:
+                line_parts.append(current_line)
+                current_line = word + " "
+            else:
+                current_line = test_line
+                
+        if current_line:
+            line_parts.append(current_line)
+            
+        for part in line_parts:
+            cv2.putText(frame, part, (50, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            y_pos += 30
+    
+    # Add instruction to resume driving
+    cv2.putText(frame, "Monitoring will resume shortly", (150, 400), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+    
+    return frame
 
 if __name__ == "__main__":
     main()

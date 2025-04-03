@@ -1034,6 +1034,39 @@ class DrowsinessDetector:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             return viz_frame, False, None
 
+    def play_suspension_message(self, message):
+        """Play an audio message for suspension/unsuspension notifications"""
+        if not self.alarm_enabled:
+            return
+            
+        # Stop any currently playing sounds
+        self.stop_alarm()
+        
+        try:
+            # Use text-to-speech to convert the message to audio
+            # This implementation uses pygame's mixer to play a system beep
+            # followed by the message text printed to console
+            
+            # Play a notification sound
+            notification_sound = self.alarm_sounds['medium']
+            notification_sound.play()
+            
+            # In a real implementation, you would use a TTS service or library
+            # For example with pyttsx3:
+            # import pyttsx3
+            # engine = pyttsx3.init()
+            # engine.say(message)
+            # engine.runAndWait()
+            
+            # For now, we'll just print the message
+            print(f"[AUDIO MESSAGE]: {message}")
+            
+            self.alarm_playing = True
+            time.sleep(1)  # Give time for the notification sound to play
+            self.alarm_playing = False
+        except Exception as e:
+            print(f"Error playing suspension message: {str(e)}")
+
 if __name__ == "__main__":
     # Simple test with webcam
     detector = DrowsinessDetector()
