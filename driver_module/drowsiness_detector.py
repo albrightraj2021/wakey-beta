@@ -1,5 +1,4 @@
 import cv2
-import numpy as np
 import os
 import time
 from datetime import datetime
@@ -10,6 +9,7 @@ from io import BytesIO
 from PIL import Image
 import threading
 import queue
+import numpy as np  # ADDED: Import numpy
 
 class DrowsinessDetector:
     """Advanced drowsiness detection using facial landmarks"""
@@ -59,7 +59,7 @@ class DrowsinessDetector:
         
         # Add low-light parameters
         self.low_light_mode = False
-        self.light_threshold = 60  # Threshold to determine low light conditions
+        self.light_threshold = 70  # Adjust threshold for better low light detection
         self.brightness_history = []
         self.max_brightness_history = 30
         
@@ -168,7 +168,7 @@ class DrowsinessDetector:
                     # Detect faces using MobileNetSSD
                     faces = self.detect_faces_mobilenetssd(self.reference_image)
                     
-                    if faces:
+                    if (faces):
                         # Get the largest face for reference
                         largest_face = max(faces, key=lambda face: face[2] * face[3])
                         x, y, w, h = largest_face
@@ -543,87 +543,67 @@ class DrowsinessDetector:
             
         self.last_risk_update = current_time
         
-        # Remove old alerts from history (older than 15 minutes)
         now = datetime.now()
+        # Remove old alerts from history (older than 15 minutes)
         self.alert_history = [
             alert for alert in self.alert_history 
             if (now - alert['timestamp']).total_seconds() < 900  # 15 minutes
         ]
         
-        # If no alerts, risk is low
-        if not self.alert_history:
+        # NEW: If no alerts in the last 60 seconds, assume driver is inactive.
+        if not self.alert_history or (now - max(alert['timestamp'] for alert in self.alert_history)).total_seconds() > 60:
             self.risk_level = 0
             return self.risk_level
-            
-        # Calculate time-weighted alert frequency
+        
+        # ...existing alert frequency weighted calculation...
         total_weight = 0
         weighted_sum = 0
         
-        # Recent alerts have higher weight
         for alert in self.alert_history:
-            # Time difference in minutes
             time_diff = (now - alert['timestamp']).total_seconds() / 60.0
-            
-            # Exponential decay weight: recent alerts matter more
-            # Steeper decay - alerts older than 3 minutes have much less impact
             weight = max(0.05, 2.5 * np.exp(-1.0 * time_diff))
-            
-            # Higher weight for drowsiness and microsleep than yawning
             if alert['type'] == 'drowsiness':
                 weight *= 1.5
             elif alert['type'] == 'microsleep':
                 weight *= 2.0
             elif alert['type'] == 'yawning':
-                weight *= 0.7  # Reduce impact of yawning
-            
+                weight *= 0.7
             weighted_sum += weight
             total_weight += 1
         
-        # Calculate weighted average
         if total_weight > 0:
             alert_score = weighted_sum / total_weight
-            
-            # Natural decay - if most recent alert is older than 3 minutes, reduce score
-            most_recent_time = max([alert['timestamp'] for alert in self.alert_history])
+            most_recent_time = max(alert['timestamp'] for alert in self.alert_history)
             minutes_since_last_alert = (now - most_recent_time).total_seconds() / 60.0
-            
             if minutes_since_last_alert > 3:
-                # Apply decay factor - the longer since the last alert, the more we reduce
                 decay_factor = min(0.8, 0.2 * (minutes_since_last_alert - 3))
                 alert_score = max(0, alert_score - decay_factor)
             
-            # Convert score to risk level
             if alert_score < 0.5:
-                risk = 0  # Low risk
+                risk = 0
             elif alert_score < 1.0:
-                risk = 1  # Medium risk
+                risk = 1
             elif alert_score < 2.0:
-                risk = 2  # High risk
+                risk = 2
             else:
-                risk = 3  # Critical risk
+                risk = 3
                 
-            # Check for rapid increase in alerts (more than 3 in last 5 minutes)
             recent_alerts = sum(1 for alert in self.alert_history 
-                             if (now - alert['timestamp']).total_seconds() < 300)
+                                if (now - alert['timestamp']).total_seconds() < 300)
             if recent_alerts >= 3:
-                risk = max(2, risk)  # At least high risk
+                risk = max(2, risk)
             
-            # Check for multiple microsleeps
             recent_microsleeps = sum(1 for alert in self.alert_history 
-                                 if alert['type'] == 'microsleep' and 
-                                 (now - alert['timestamp']).total_seconds() < 600)
+                                     if alert['type'] == 'microsleep' and 
+                                     (now - alert['timestamp']).total_seconds() < 600)
             if recent_microsleeps >= 2:
-                risk = 3  # Critical risk
+                risk = 3
                 
-            # Ensure risk level decreases over time without new alerts
-            # Drastically reduced from minutes to just 10 seconds (0.1667 minutes)
             if minutes_since_last_alert > (10/60) and self.risk_level >= 2:
-                # Step down by one level
                 risk = max(1, self.risk_level - 1)
                 
             self.risk_level = risk
         else:
-            # Fallback - should not happen as we check for empty alert_history above
             self.risk_level = 0
         
         return self.risk_level
@@ -649,22 +629,18 @@ class DrowsinessDetector:
         
         # In low light, apply more aggressive enhancement
         if self.low_light_mode:
-            # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
-            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+            # Increase enhancement for low-light conditions
+            clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
             enhanced = clahe.apply(gray)
-            
-            # Increase contrast
-            alpha = 1.5  # Contrast control
-            beta = 30    # Brightness control
+            alpha = 1.8  # Increase contrast further
+            beta = 40    # Increase brightness
             enhanced = cv2.convertScaleAbs(enhanced, alpha=alpha, beta=beta)
-            
-            # Reduce noise with bilateral filter (preserves edges)
             enhanced = cv2.bilateralFilter(enhanced, 9, 75, 75)
             
             return enhanced, True
         else:
             # For normal light, mild enhancement
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8,8))
             enhanced = clahe.apply(gray)
             return enhanced, False
     
@@ -861,7 +837,7 @@ class DrowsinessDetector:
             gray, is_low_light = self.enhance_image_for_detection(frame)
             
             # Display low-light mode indicator
-            if is_low_light:
+            if (is_low_light):
                 cv2.putText(viz_frame, "LOW LIGHT MODE", (frame.shape[1] - 200, 60), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 140, 255), 2)
             
@@ -967,14 +943,15 @@ class DrowsinessDetector:
                         # Check for yawning
                         if mor > self.MOR_THRESHOLD:
                             self.mor_counter += 1
-                            if self.mor_counter >= self.CONSECUTIVE_FRAMES // 2:
-                                current_yawning = True
-                                if not current_drowsy:
-                                    alert_type = 'yawning'
-                                cv2.putText(viz_frame, "YAWNING DETECTED!", (10, 150), 
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                         else:
-                            self.mor_counter = 0
+                            self.mor_counter = max(0, self.mor_counter - 1)
+                        
+                        if self.mor_counter >= (self.CONSECUTIVE_FRAMES // 2):
+                            current_yawning = True
+                            if not current_drowsy:
+                                alert_type = 'yawning'
+                            cv2.putText(viz_frame, "YAWNING DETECTED!", (10, 150), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                     except Exception as e:
                         print(f"Error processing facial landmarks: {e}")
                         # Continue with the next face if available

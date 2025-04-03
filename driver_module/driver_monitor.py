@@ -9,6 +9,8 @@ import base64
 from io import BytesIO
 import numpy as np
 from PIL import Image
+import sys
+import os
 
 def main():
     parser = argparse.ArgumentParser(description="Driver Monitoring Application")
@@ -180,8 +182,14 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2)
             cv2.imshow("Driver Monitor", frame)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
             break
+        # NEW: Restart the script when 'r' key is pressed
+        if key == ord('r'):
+            print("Restarting driver monitor...")
+            python = sys.executable
+            os.execl(python, python, *sys.argv)
 
     # Send any remaining alerts before exiting
     if queued_alerts and data_sender and active_driver_id:

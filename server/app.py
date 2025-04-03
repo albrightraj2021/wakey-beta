@@ -356,13 +356,13 @@ def detect_drowsiness_in_feed(user_id=None, db_connection_func=None):
                 
                 # Store risk level in database periodically
                 current_time = time.time()
-                if db_connection_func and user_id and (current_time - last_risk_update) > 60:
+                if db_connection_func and user_id and (current_time - last_risk_update) > 10:
                     try:
                         conn = db_connection_func()
                         cursor = conn.cursor()
                         cursor.execute(
-                            "UPDATE users SET risk_level = %s WHERE id = %s",
-                            (risk_level, user_id)
+                            "UPDATE users SET risk_level = %s, last_risk_update = %s WHERE id = %s",
+                            (risk_level, datetime.now().isoformat(), user_id)
                         )
                         conn.commit()
                         cursor.close()
@@ -819,33 +819,50 @@ def driver_alerts(driver_id):
 @app.route('/reset_password/<int:driver_id>', methods=['GET', 'POST'])
 def reset_password(driver_id):
     """Reset password for a driver"""
-    if 'user_id' not in session or session['user_type'] != 'owner':
+    if 'user_id' not in session or session['user_type'] != 'owner' and session.get('user_id') != driver_id:
         return redirect(url_for('login'))
     
-    # Verify relationship between owner and driver
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("""
-        SELECT EXISTS(
-            SELECT 1 FROM driver_owner 
-            WHERE driver_id = %s AND owner_id = %s
-        ) as is_associated
-    """, (driver_id, session['user_id']))
-    result = cursor.fetchone()
-    if not result or not result['is_associated']:
+    # Verify relationship between owner and driver if reset is done by owner
+    if session['user_type'] == 'owner':
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT EXISTS(
+                SELECT 1 FROM driver_owner 
+                WHERE driver_id = %s AND owner_id = %s
+            ) as is_associated
+        """, (driver_id, session['user_id']))
+        result = cursor.fetchone()
+        if not result or not result['is_associated']:
+            cursor.close()
+            conn.close()
+            return redirect(url_for('owner_dashboard'))
+        cursor.execute("SELECT username, password FROM users WHERE id = %s", (driver_id,))
+        driver = cursor.fetchone()
         cursor.close()
         conn.close()
-        return redirect(url_for('owner_dashboard'))
-    
-    # Get driver info
-    cursor.execute("SELECT username FROM users WHERE id = %s", (driver_id,))
-    driver = cursor.fetchone()
+    else:
+        # If a driver is resetting their own password, fetch their info
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT username, password FROM users WHERE id = %s", (driver_id,))
+        driver = cursor.fetchone()
+        cursor.close()
+        conn.close()
     
     if request.method == 'POST':
+        current_password = request.form['current_password']
         new_password = request.form['new_password']
+        
+        # If the logged-in user is resetting their own password (driver), verify current password
+        if session.get('user_type') == 'driver' or (session['user_type'] != 'owner' and session.get('user_id') == driver_id):
+            if not check_password_hash(driver['password'], current_password):
+                return render_template('reset_password.html', driver=driver, driver_id=driver_id, error="Current password is incorrect")
         
         # Update password
         hashed_password = generate_password_hash(new_password)
+        conn = get_db_connection()
+        cursor = conn.cursor()
         cursor.execute(
             "UPDATE users SET password = %s WHERE id = %s",
             (hashed_password, driver_id)
@@ -856,9 +873,6 @@ def reset_password(driver_id):
         
         # Redirect back to driver view with success message
         return redirect(url_for('view_driver', driver_id=driver_id))
-    
-    cursor.close()
-    conn.close()
     
     return render_template('reset_password.html', driver=driver, driver_id=driver_id)
 
@@ -1105,33 +1119,25 @@ def driver_module_status(driver_id):
     if 'user_id' not in session:
         return jsonify({'success': False, 'error': 'Unauthorized'}), 401
     
-    # Check permissions
     if session['user_type'] == 'owner':
-        # Owner can check any of their drivers
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        
         cursor.execute("""
             SELECT EXISTS(
                 SELECT 1 FROM driver_owner 
                 WHERE driver_id = %s AND owner_id = %s
             ) as is_associated
         """, (driver_id, session['user_id']))
-        
         result = cursor.fetchone()
         if not result or not result['is_associated']:
             cursor.close()
             conn.close()
             return jsonify({'success': False, 'error': 'Not authorized for this driver'}), 403
     elif session['user_id'] != driver_id:
-        # Drivers can only check themselves
         return jsonify({'success': False, 'error': 'Not authorized for this driver'}), 403
     
-    # For this example, we'll check when the latest alert was recorded
-    # In a real system, the driver module would periodically ping the server with its status
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    
     cursor.execute("""
         SELECT MAX(timestamp) as last_alert, 
                COUNT(*) as total_alerts,
@@ -1141,25 +1147,20 @@ def driver_module_status(driver_id):
         WHERE a.user_id = %s
         GROUP BY u.risk_level
     """, (driver_id,))
-    
     result = cursor.fetchone()
     cursor.close()
     conn.close()
     
     if result and result['last_alert']:
         last_alert_time = result['last_alert']
-        # Calculate how long ago the last alert was
         time_diff = datetime.now() - last_alert_time
-        minutes_ago = time_diff.total_seconds() / 60
-        
-        # Consider the module active if there was an alert in the last 15 minutes
-        is_active = minutes_ago < 15
-        
+        # Change threshold from 15 minutes to 60 seconds
+        is_active = time_diff.total_seconds() < 60
         return jsonify({
             'success': True,
             'is_active': is_active,
             'last_alert': last_alert_time.isoformat(),
-            'minutes_since_last_alert': round(minutes_ago, 1),
+            'seconds_since_last_alert': round(time_diff.total_seconds(), 1),
             'total_alerts': result['total_alerts'],
             'risk_level': result['risk_level']
         })
@@ -1513,12 +1514,11 @@ def get_risk_level(driver_id):
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         
-        # FIX: Use the correct table and use cursor.execute
+        # Fetch risk level, risk label, and last risk update timestamp
         cursor.execute(
-            'SELECT risk_level, risk_label FROM users WHERE id = %s', 
+            'SELECT risk_level, risk_label, last_risk_update FROM users WHERE id = %s', 
             (driver_id,)
         )
-        
         driver = cursor.fetchone()
         cursor.close()
         conn.close()
@@ -1526,14 +1526,33 @@ def get_risk_level(driver_id):
         if not driver:
             return jsonify({'success': False, 'error': 'Driver not found'}), 404
         
-        # Use default values if fields are None
         risk_level = driver.get('risk_level', 0) if driver.get('risk_level') is not None else 0
         risk_label = driver.get('risk_label', 'LOW') if driver.get('risk_label') else 'LOW'
+        last_update = driver.get('last_risk_update')
+        
+        is_online = True
+        if last_update:
+            # If stored as string, convert to datetime
+            if isinstance(last_update, str):
+                last_update_dt = datetime.fromisoformat(last_update)
+            else:
+                last_update_dt = last_update
+            offline_threshold = 30  # seconds threshold
+            delta = datetime.now() - last_update_dt
+            if delta.total_seconds() > offline_threshold:
+                is_online = False
+                risk_label = "Offline"
+                risk_level = 0
+        else:
+            is_online = False
+            risk_label = "Offline"
+            risk_level = 0
         
         return jsonify({
             'success': True,
             'risk_level': risk_level,
-            'risk_label': risk_label
+            'risk_label': risk_label,
+            'is_online': is_online
         })
         
     except Exception as e:
@@ -1544,7 +1563,6 @@ def get_risk_level(driver_id):
 @app.route('/api/driver_references', methods=['GET'])
 def api_driver_references():
     """API endpoint to provide reference images for all drivers with face recognition enabled"""
-    
     # Validate API key if provided
     auth_header = request.headers.get('Authorization')
     if (auth_header and auth_header.startswith('Bearer ')):
@@ -1559,13 +1577,12 @@ def api_driver_references():
         
         if not result:
             return jsonify({'success': False, 'error': 'Invalid API key'}), 401
-    
+        
     try:
         # Get all drivers with reference images
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         
-        # Only return drivers with reference images
         cursor.execute("""
             SELECT id, username, reference_image
             FROM users

@@ -42,3 +42,4 @@ CREATE TABLE IF NOT EXISTS vehicles (
     FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (driver_id) REFERENCES users(id) ON DELETE SET NULL
 );
+
