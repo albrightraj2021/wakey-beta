@@ -407,7 +407,7 @@
                 
                 // Convert canvas to data URL (JPEG format)
                 const dataURL = canvas.toDataURL('image/jpeg', 0.85);
-                referenceImageData.value = dataURL;
+                referenceImageData.value = dataURL.split(',')[1]; // Store only the base64 part
                 
                 // Show preview
                 previewImage.src = dataURL;
@@ -515,4 +515,3 @@
     </script>
 </body>
 </html>
-```

@@ -435,37 +435,49 @@ def send_direct_risk_update(server_url, driver_id, risk_level, risk_label, api_k
     """Send a direct risk level update to the server's risk_level endpoint"""
     if not server_url or not driver_id:
         return False
-    
+
     try:
         # Construct the risk update URL
         risk_update_url = f"{server_url.rstrip('/')}/api/update_risk_level/{driver_id}"
-        
+
         # Prepare headers - only add Authorization if API key is provided
         headers = {'Content-Type': 'application/json'}
         if api_key:
             headers['Authorization'] = f'Bearer {api_key}'
-        
+
         # Prepare payload
         payload = {
             'risk_level': risk_level,
             'risk_label': risk_label
         }
-        
-        # Send the request
-        response = requests.post(
-            risk_update_url,
-            headers=headers,
-            json=payload,
-            timeout=3  # Short timeout for quick updates
-        )
-        
-        if response.status_code == 200:
-            print(f"Successfully sent direct risk level update: {risk_label}")
-            return True
-        else:
-            print(f"Error sending risk level update: {response.status_code}")
-            return False
-    
+
+        # Retry logic
+        max_retries = 3
+        timeout_duration = 10  # Increased timeout duration
+        for attempt in range(max_retries):
+            try:
+                # Send the request
+                response = requests.post(
+                    risk_update_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=timeout_duration
+                )
+
+                if response.status_code == 200:
+                    print(f"Successfully sent direct risk level update: {risk_label}")
+                    return True
+                else:
+                    print(f"Error sending risk level update (attempt {attempt + 1}/{max_retries}): {response.status_code}")
+            except requests.exceptions.RequestException as e:
+                print(f"Request exception on attempt {attempt + 1}/{max_retries}: {e}")
+
+            # Wait before retrying
+            time.sleep(2)
+
+        print("Failed to send risk level update after multiple attempts.")
+        return False
+
     except Exception as e:
         print(f"Error sending direct risk level update: {e}")
         return False

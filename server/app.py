@@ -32,6 +32,31 @@ def get_db_connection():
         database="distracted_driver"
     )
 
+def ensure_columns_exist():
+    """Ensure the required columns exist in the users table."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # Check and add the 'suspended' column if it doesn't exist
+        cursor.execute("SHOW COLUMNS FROM users LIKE 'suspended'")
+        if not cursor.fetchone():
+            cursor.execute("ALTER TABLE users ADD COLUMN suspended BOOLEAN DEFAULT FALSE")
+        
+        # Check and add the 'suspension_message' column if it doesn't exist
+        cursor.execute("SHOW COLUMNS FROM users LIKE 'suspension_message'")
+        if not cursor.fetchone():
+            cursor.execute("ALTER TABLE users ADD COLUMN suspension_message TEXT")
+        
+        conn.commit()
+    except Exception as e:
+        print(f"Error ensuring columns exist: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
+# Call the function during app initialization
+ensure_columns_exist()
+
 # Routes for user authentication
 @app.route('/')
 def index():
@@ -178,34 +203,26 @@ def register_driver():
         
         # Process reference photo - handle both file upload and webcam capture
         reference_image = None
-        if require_face_recognition and face_recognition_option == 'upload':
-            # First check if we have webcam captured image data
+        if require_face_recognition:
+            # Check for webcam-captured image data
             webcam_image_data = request.form.get('referenceImageData')
-            if webcam_image_data and webcam_image_data.startswith('data:image'):
-                # Use the webcam image directly (it's already base64 encoded)
+            if webcam_image_data:
+                # Use the webcam image data directly (already base64 encoded)
                 reference_image = webcam_image_data
-                print("Using webcam-captured reference image")
             else:
-                # Fall back to file upload if no webcam data
+                # Handle file upload
                 file = request.files.get('referencePhoto')
                 if file and file.filename:
                     try:
-                        # Read file data
                         img_data = file.read()
-                        
-                        # Convert to base64 for database storage
                         reference_image = base64.b64encode(img_data).decode('utf-8')
-                        
                     except Exception as e:
-                        print(f"Error processing reference photo: {e}")
                         return render_template('register_driver.html', error=f"Error processing photo: {str(e)}")
-                elif face_recognition_option == 'upload' and not webcam_image_data:
-                    # If upload option was selected but no file or webcam data provided
+                elif face_recognition_option == 'upload':
                     return render_template('register_driver.html', error="Please capture a photo or select a reference photo file")
         
         # Insert new driver
         hashed_password = generate_password_hash(driver_password)
-        
         try:
             query = (
                 "INSERT INTO users "
@@ -226,43 +243,30 @@ def register_driver():
             )
             cursor.execute(query, values)
         except mysql.connector.Error as err:
-            # If error is due to missing columns, add them
             if "Unknown column" in str(err):
                 try:
-                    # Add missing columns
                     cursor.execute("ALTER TABLE users ADD COLUMN first_name VARCHAR(50)")
                     cursor.execute("ALTER TABLE users ADD COLUMN last_name VARCHAR(50)")
                     cursor.execute("ALTER TABLE users ADD COLUMN phone_number VARCHAR(20)")
                     cursor.execute("ALTER TABLE users ADD COLUMN require_face_recognition BOOLEAN DEFAULT TRUE")
                     if "reference_image" not in str(err):
                         cursor.execute("ALTER TABLE users ADD COLUMN reference_image LONGTEXT")
-                    
-                    # Try insert again
                     cursor.execute(query, values)
                 except Exception as e:
-                    # If still fails, use the original insert without the new columns
                     cursor.execute(
                         "INSERT INTO users (username, password, email, user_type) VALUES (%s, %s, %s, %s)",
                         (driver_username, hashed_password, driver_email, 'driver')
                     )
-        
         conn.commit()
-        
-        # Get the new driver ID
         driver_id = cursor.lastrowid
-        
-        # Associate driver with owner
         cursor.execute(
             "INSERT INTO driver_owner (driver_id, owner_id) VALUES (%s, %s)",
             (driver_id, session['user_id'])
         )
         conn.commit()
-        
         cursor.close()
         conn.close()
-        
         return redirect(url_for('owner_dashboard'))
-    
     return render_template('register_driver.html')
 
 # Fix the import path for the drowsiness detection module
@@ -285,7 +289,7 @@ def detect_drowsiness_in_feed(user_id=None, db_connection_func=None):
     from datetime import datetime
     
     # Initialize camera
-    camera = cv2.VideoCapture(0)
+    camera = cv2.VideoCapture(1)
     if not camera.isOpened():
         print("Error: Could not open camera.")
         yield None
