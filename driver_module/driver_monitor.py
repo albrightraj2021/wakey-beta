@@ -26,7 +26,7 @@ def main():
         # Initialize DataSender with server URL, API key is optional
         data_sender = DataSender(server_url=args.server, api_key=args.api_key if hasattr(args, 'api_key') else None)
 
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(1)
     if not cap.isOpened():
         print("Error: Cannot open webcam")
         return

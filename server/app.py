@@ -289,7 +289,7 @@ def detect_drowsiness_in_feed(user_id=None, db_connection_func=None):
     from datetime import datetime
     
     # Initialize camera
-    camera = cv2.VideoCapture(1)
+    camera = cv2.VideoCapture(2)
     if not camera.isOpened():
         print("Error: Could not open camera.")
         yield None
@@ -475,8 +475,6 @@ def capture_reference():
             return render_template('capture_reference.html', error="No image data provided. Please capture a photo.")
         
         try:
-            # Validate the image has a face before saving
-            import face_recognition
             import numpy as np
             import base64
             from io import BytesIO
@@ -488,19 +486,21 @@ def capture_reference():
             else:
                 image_data_b64 = image_data
                 
-            # Decode and verify face
+            # Decode and convert to OpenCV format
             img_bytes = base64.b64decode(image_data_b64)
             img = Image.open(BytesIO(img_bytes))
             img_np = np.array(img)
             
-            # Use face_recognition to validate
-            face_locations = face_recognition.face_locations(img_np)
+            # Use OpenCV for face detection
+            gray_img = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+            face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+            faces = face_cascade.detectMultiScale(gray_img, scaleFactor=1.1, minNeighbors=5)
             
-            if not face_locations:
+            if len(faces) == 0:
                 return render_template('capture_reference.html', 
                                       error="No face detected in the image. Please try again with better lighting and positioning.")
             
-            if len(face_locations) > 1:
+            if len(faces) > 1:
                 return render_template('capture_reference.html', 
                                       error="Multiple faces detected. Please ensure only your face is in the frame.")
             
@@ -596,6 +596,68 @@ def view_alerts():
     conn.close()
     
     return render_template('view_alerts.html', alerts=alerts, drivers=drivers, request=request)
+
+# ...existing code...
+@app.route('/update_reference/<int:driver_id>', methods=['POST'])
+def update_reference(driver_id):
+    """Update a driver's reference image from the owner dashboard"""
+    if 'user_id' not in session or session['user_type'] != 'owner':
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
+    # Verify owner-driver relationship
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT EXISTS(
+            SELECT 1 FROM driver_owner WHERE driver_id = %s AND owner_id = %s
+        ) as is_associated
+    """, (driver_id, session['user_id']))
+    result = cursor.fetchone()
+    if not result or not result['is_associated']:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': 'Not authorized for this driver'}), 403
+
+    data = request.get_json()
+    image_data = data.get('image_data', '')
+    if not image_data or 'data:image' not in image_data:
+        return jsonify({'success': False, 'error': 'Invalid image data provided'}), 400
+
+    try:
+        import numpy as np
+        import base64
+        from io import BytesIO
+        from PIL import Image
+
+        # Extract base64 portion if present
+        if ',' in image_data:
+            image_data_b64 = image_data.split(',')[1]
+        else:
+            image_data_b64 = image_data
+
+        img_bytes = base64.b64decode(image_data_b64)
+        img = Image.open(BytesIO(img_bytes))
+        img_np = np.array(img)
+
+        # Use OpenCV for face detection
+        gray_img = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        faces = face_cascade.detectMultiScale(gray_img, scaleFactor=1.1, minNeighbors=5)
+        
+        if len(faces) == 0:
+            return jsonify({'success': False, 'error': 'No face detected. Please try again.'}), 400
+        if len(faces) > 1:
+            return jsonify({'success': False, 'error': 'Multiple faces detected. Please capture only one face.'}), 400
+
+        cursor.execute("UPDATE users SET reference_image = %s WHERE id = %s", (image_data, driver_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({'success': True, 'message': 'Reference image updated successfully'})
+    except Exception as e:
+        print(f"Error processing reference image: {e}")
+        return jsonify({'success': False, 'error': f"Error saving image: {str(e)}"}), 500
+
 
 # API routes for AJAX calls
 @app.route('/api/recent_alerts')

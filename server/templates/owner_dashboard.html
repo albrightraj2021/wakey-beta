@@ -201,6 +201,13 @@
                                             <a href="/driver_alerts/{{ driver.id }}" class="btn btn-info">
                                                 <i class="bi bi-bell"></i> Alerts
                                             </a>
+                                            <button class="btn btn-secondary update-ref-btn" 
+                                                data-bs-toggle="modal"
+                                                data-bs-target="#updateReferenceModal"
+                                                data-driver-id="{{ driver.id }}"
+                                                data-driver-name="{{ driver.username }}">
+                                                <i class="bi bi-camera"></i> Update Photo
+                                            </button>
                                             <button class="btn {% if driver.suspended %}btn-success{% else %}btn-danger{% endif %} suspension-btn" 
                                                 data-bs-toggle="modal" 
                                                 data-bs-target="#suspensionModal" 
@@ -271,6 +278,56 @@
         </div>
     </div>
 
+    <!-- Add Update Reference Image Modal -->
+    <div class="modal fade" id="updateReferenceModal" tabindex="-1" aria-labelledby="updateReferenceModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="updateReferenceModalLabel">Update Reference Photo</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <form id="referenceImageForm">
+              <input type="hidden" id="referenceDriverId" name="driver_id">
+              <div class="row">
+                <div class="col-md-8">
+                  <div class="position-relative mb-3" style="height: 320px;">
+                    <video id="webcam" autoplay playsinline style="width: 100%; height: 100%; object-fit: cover; border:1px solid #ccc;"></video>
+                    <canvas id="captureCanvas" style="display: none;"></canvas>
+                    <div id="captureCountdown" class="position-absolute top-50 start-50 translate-middle" style="font-size: 4rem; color: white; text-shadow: 2px 2px 5px black; display: none;">3</div>
+                  </div>
+                  <div class="d-flex justify-content-between">
+                    <button type="button" id="startCameraBtn" class="btn btn-primary">Start Camera</button>
+                    <button type="button" id="capturePhotoBtn" class="btn btn-success" disabled>Capture Photo</button>
+                  </div>
+                </div>
+                <div class="col-md-4">
+                  <div class="mb-3">
+                    <label class="form-label">Preview:</label>
+                    <div class="border rounded p-2 bg-light text-center">
+                      <img id="photoPreview" src="/static/img/placeholder.png" class="img-fluid" style="max-height: 250px; object-fit: contain;">
+                    </div>
+                  </div>
+                  <div class="form-text mb-3">
+                    <ul>
+                      <li>Ensure proper lighting</li>
+                      <li>Keep face centered</li>
+                      <li>Maintain neutral expression</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+              <input type="hidden" id="imageData" name="image_data">
+            </form>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" id="saveRefImageBtn" disabled>Save Photo</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         // Function to update dashboard information
@@ -516,6 +573,118 @@
                 });
             });
         });
+
+        document.addEventListener('DOMContentLoaded', function() {
+        const updateButtons = document.querySelectorAll('.update-ref-btn');
+        const driverIdInput = document.getElementById('referenceDriverId');
+        const modalTitle = document.getElementById('updateReferenceModalLabel');
+        const startCameraBtn = document.getElementById('startCameraBtn');
+        const capturePhotoBtn = document.getElementById('capturePhotoBtn');
+        const saveRefImageBtn = document.getElementById('saveRefImageBtn');
+        const webcamElement = document.getElementById('webcam');
+        const captureCanvas = document.getElementById('captureCanvas');
+        const captureCountdown = document.getElementById('captureCountdown');
+        const photoPreview = document.getElementById('photoPreview');
+        const imageDataInput = document.getElementById('imageData');
+        let stream = null;
+        
+        updateButtons.forEach(btn => {
+          btn.addEventListener('click', function() {
+            const driverId = this.getAttribute('data-driver-id');
+            const driverName = this.getAttribute('data-driver-name');
+            driverIdInput.value = driverId;
+            modalTitle.textContent = `Update Photo for ${driverName}`;
+            photoPreview.src = "/static/img/placeholder.png";
+            imageDataInput.value = "";
+            capturePhotoBtn.disabled = true;
+            saveRefImageBtn.disabled = true;
+            // Reset video element and stop previous stream if any
+            if (stream) {
+              stream.getTracks().forEach(track => track.stop());
+              stream = null;
+            }
+            webcamElement.style.display = 'none';
+          });
+        });
+        
+        startCameraBtn.addEventListener('click', async function() {
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+            webcamElement.srcObject = stream;
+            webcamElement.style.display = 'block';
+            capturePhotoBtn.disabled = false;
+            startCameraBtn.disabled = true;
+          } catch (e) {
+            alert("Error accessing webcam: " + e.message);
+          }
+        });
+        
+        capturePhotoBtn.addEventListener('click', function() {
+          // Countdown before capture
+          let count = 3;
+          captureCountdown.style.display = 'block';
+          captureCountdown.textContent = count;
+          const interval = setInterval(() => {
+            count--;
+            if (count === 0) {
+              clearInterval(interval);
+              captureCountdown.style.display = 'none';
+              // Capture current frame
+              captureCanvas.width = webcamElement.videoWidth;
+              captureCanvas.height = webcamElement.videoHeight;
+              captureCanvas.getContext('2d').drawImage(webcamElement, 0, 0);
+              const dataURL = captureCanvas.toDataURL('image/jpeg');
+              photoPreview.src = dataURL;
+              imageDataInput.value = dataURL;
+              saveRefImageBtn.disabled = false;
+            } else {
+              captureCountdown.textContent = count;
+            }
+          }, 1000);
+        });
+        
+        saveRefImageBtn.addEventListener('click', function() {
+          const driverId = driverIdInput.value;
+          const imageData = imageDataInput.value;
+          if (!imageData) {
+            alert("No image captured.");
+            return;
+          }
+          fetch(`/update_reference/${driverId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_data: imageData })
+          })
+          .then(response => response.json())
+          .then(data => {
+            if (data.success) {
+              alert("Reference image updated successfully.");
+              // Stop stream and reset modal
+              if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+              }
+              startCameraBtn.disabled = false;
+              capturePhotoBtn.disabled = true;
+              saveRefImageBtn.disabled = true;
+              bootstrap.Modal.getInstance(document.getElementById('updateReferenceModal')).hide();
+            } else {
+              alert("Error: " + data.error);
+            }
+          })
+          .catch(err => alert("Error: " + err.message));
+        });
+        
+        // When modal is closed, stop webcam if active
+        const updateModal = document.getElementById('updateReferenceModal');
+        updateModal.addEventListener('hidden.bs.modal', function() {
+          if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+            stream = null;
+          }
+          startCameraBtn.disabled = false;
+        });
+      });
     </script>
 </body>
 </html>
