@@ -11,6 +11,8 @@ import numpy as np
 from PIL import Image
 import sys
 import os
+import traceback
+import warnings
 
 def main():
     parser = argparse.ArgumentParser(description="Driver Monitoring Application")
@@ -19,230 +21,248 @@ def main():
     parser.add_argument("--api-key", type=str, help="API Key (optional)", required=False)
     args = parser.parse_args()
 
-    detector = DrowsinessDetector()
+    print("Initializing driver monitoring system...")
+    
+    try:
+        # Initialize drowsiness detector with error handling
+        try:
+            detector = DrowsinessDetector()
+            print("Drowsiness detector initialized successfully")
+        except Exception as e:
+            print(f"Error initializing drowsiness detector: {e}")
+            print("The application may run with limited functionality")
+            traceback.print_exc()
+            warnings.warn("Continuing with limited functionality")
+            # Create a minimal version or mock if needed
 
-    data_sender = None
-    if args.server:
-        # Initialize DataSender with server URL, API key is optional
-        data_sender = DataSender(server_url=args.server, api_key=args.api_key if hasattr(args, 'api_key') else None)
+        data_sender = None
+        if args.server:
+            # Initialize DataSender with server URL, API key is optional
+            data_sender = DataSender(server_url=args.server, api_key=args.api_key if hasattr(args, 'api_key') else None)
 
-    cap = cv2.VideoCapture(1)
-    if not cap.isOpened():
-        print("Error: Cannot open webcam")
-        return
-
-    # Add throttling variables
-    last_alert_time = 0
-    alert_cooldown = 10  # seconds between alerts
-    last_yawn_alert_time = 0
-    yawn_cooldown = 20  # seconds between yawn alerts
-    
-    # Batch alerts to reduce API calls
-    queued_alerts = []
-    last_send_time = time.time()
-    send_interval = 15  # seconds between batch sends
-    
-    # Add risk update variables
-    last_risk_update_time = 0
-    risk_update_interval = 3  # Reduced interval to 3 seconds for more frequent updates
-    
-    # Last sent risk level to avoid sending duplicates
-    last_sent_risk_level = -1
-
-    # Driver authentication variables
-    active_driver_id = args.driver_id
-    active_driver_username = None
-    reference_images = {}
-    authentication_attempts = 0
-    max_authentication_attempts = 10
-    authentication_interval = 5  # seconds between authentication attempts
-    last_authentication_time = 0
-    
-    # Add suspension variables
-    is_suspended = False
-    last_suspension_check = 0
-    suspension_check_interval = 30  # Check every 30 seconds
-    
-    if active_driver_id is None:
-        print("No driver ID provided. Will attempt to automatically authenticate driver.")
-        # Fetch available driver reference images
-        reference_images = fetch_driver_references(args.server, args.api_key)
-        if not reference_images:
-            print("Error: Could not fetch any driver reference images from the server.")
-            print("Please check your server connection or provide a specific driver ID.")
+        cap = cv2.VideoCapture(1)
+        if not cap.isOpened():
+            print("Error: Cannot open webcam")
             return
-        print(f"Fetched {len(reference_images)} driver references. Starting automatic authentication...")
-    else:
-        # If driver ID is provided, try to get the username for display purposes
-        driver_info = get_driver_info(args.server, args.driver_id, args.api_key)
-        if driver_info:
-            active_driver_username = driver_info.get('username')
-            print(f"Driver monitoring started for: {active_driver_username} (ID: {active_driver_id})")
+
+        # Add throttling variables
+        last_alert_time = 0
+        alert_cooldown = 10  # seconds between alerts
+        last_yawn_alert_time = 0
+        yawn_cooldown = 20  # seconds between yawn alerts
+        
+        # Batch alerts to reduce API calls
+        queued_alerts = []
+        last_send_time = time.time()
+        send_interval = 15  # seconds between batch sends
+        
+        # Add risk update variables
+        last_risk_update_time = 0
+        risk_update_interval = 3  # Reduced interval to 3 seconds for more frequent updates
+        
+        # Last sent risk level to avoid sending duplicates
+        last_sent_risk_level = -1
+
+        # Driver authentication variables
+        active_driver_id = args.driver_id
+        active_driver_username = None
+        reference_images = {}
+        authentication_attempts = 0
+        max_authentication_attempts = 10
+        authentication_interval = 5  # seconds between authentication attempts
+        last_authentication_time = 0
+        
+        # Add suspension variables
+        is_suspended = False
+        last_suspension_check = 0
+        suspension_check_interval = 30  # Check every 30 seconds
+        
+        if active_driver_id is None:
+            print("No driver ID provided. Will attempt to automatically authenticate driver.")
+            # Fetch available driver reference images
+            reference_images = fetch_driver_references(args.server, args.api_key)
+            if not reference_images:
+                print("Error: Could not fetch any driver reference images from the server.")
+                print("Please check your server connection or provide a specific driver ID.")
+                return
+            print(f"Fetched {len(reference_images)} driver references. Starting automatic authentication...")
         else:
-            print(f"Driver monitoring started for ID: {active_driver_id}")
-    
-    print(f"Connected to server: {args.server}")
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+            # If driver ID is provided, try to get the username for display purposes
+            driver_info = get_driver_info(args.server, args.driver_id, args.api_key)
+            if driver_info:
+                active_driver_username = driver_info.get('username')
+                print(f"Driver monitoring started for: {active_driver_username} (ID: {active_driver_id})")
+            else:
+                print(f"Driver monitoring started for ID: {active_driver_id}")
         
-        current_time = time.time()
-        
-        # If no driver ID provided, attempt to authenticate the driver
-        if active_driver_id is None and authentication_attempts < max_authentication_attempts:
-            if current_time - last_authentication_time > authentication_interval:
-                print(f"Attempting driver authentication (attempt {authentication_attempts + 1}/{max_authentication_attempts})")
-                driver_info = authenticate_driver(frame, reference_images, detector)
-                last_authentication_time = current_time
-                authentication_attempts += 1
-                
-                if driver_info:
-                    active_driver_id = driver_info['id']
-                    active_driver_username = driver_info['username']
-                    print(f"Driver authenticated! {active_driver_username} (ID: {active_driver_id})")
-                    
-                    # Add an overlay to show successful authentication
-                    cv2.putText(frame, f"Driver Authenticated: {active_driver_username}", (30, 60), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                    cv2.imshow("Driver Monitor", frame)
-                    cv2.waitKey(1000)  # Show the success message for 1 second
+        print(f"Connected to server: {args.server}")
 
-        # If we've exhausted authentication attempts without success
-        if active_driver_id is None and authentication_attempts >= max_authentication_attempts:
-            # Show error message on frame
-            cv2.putText(frame, "Authentication failed. Please restart.", (30, 60), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            cv2.imshow("Driver Monitor", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-            continue
-
-        # Check for suspension status periodically
-        if active_driver_id and current_time - last_suspension_check > suspension_check_interval:
-            suspension_status = check_suspension_status(args.server, active_driver_id, args.api_key)
-            if suspension_status['suspended'] != is_suspended:
-                is_suspended = suspension_status['suspended']
-                if is_suspended:
-                    print(f"DRIVER SUSPENDED: {suspension_status['message']}")
-                    # Display suspension message on screen
-                    suspension_frame = create_suspension_message(suspension_status['message'])
-                    cv2.imshow('Driver Monitoring', suspension_frame)
-                    # Play audio message
-                    detector.play_suspension_message(suspension_status['message'])
-                else:
-                    print(f"DRIVER UNSUSPENDED: {suspension_status['message']}")
-                    # Display unsuspension message
-                    unsuspension_frame = create_unsuspension_message(suspension_status['message'])
-                    cv2.imshow('Driver Monitoring', unsuspension_frame)
-                    # Play audio message
-                    detector.play_suspension_message(suspension_status['message'])
-            last_suspension_check = current_time
-
-        # Skip processing if suspended
-        if is_suspended:
+        while True:
             ret, frame = cap.read()
             if not ret:
-                print("Failed to grab frame")
                 break
             
-            # Display suspension message
-            suspension_frame = create_suspension_message("YOU ARE SUSPENDED")
-            cv2.imshow('Driver Monitoring', suspension_frame)
+            current_time = time.time()
             
-            # Check for key press to exit
-            key = cv2.waitKey(1)
-            if key == 27:  # ESC key
+            # If no driver ID provided, attempt to authenticate the driver
+            if active_driver_id is None and authentication_attempts < max_authentication_attempts:
+                if current_time - last_authentication_time > authentication_interval:
+                    print(f"Attempting driver authentication (attempt {authentication_attempts + 1}/{max_authentication_attempts})")
+                    driver_info = authenticate_driver(frame, reference_images, detector)
+                    last_authentication_time = current_time
+                    authentication_attempts += 1
+                    
+                    if driver_info:
+                        active_driver_id = driver_info['id']
+                        active_driver_username = driver_info['username']
+                        print(f"Driver authenticated! {active_driver_username} (ID: {active_driver_id})")
+                        
+                        # Add an overlay to show successful authentication
+                        cv2.putText(frame, f"Driver Authenticated: {active_driver_username}", (30, 60), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        cv2.imshow("Driver Monitor", frame)
+                        cv2.waitKey(1000)  # Show the success message for 1 second
+
+            # If we've exhausted authentication attempts without success
+            if active_driver_id is None and authentication_attempts >= max_authentication_attempts:
+                # Show error message on frame
+                cv2.putText(frame, "Authentication failed. Please restart.", (30, 60), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.imshow("Driver Monitor", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+                continue
+
+            # Check for suspension status periodically
+            if active_driver_id and current_time - last_suspension_check > suspension_check_interval:
+                suspension_status = check_suspension_status(args.server, active_driver_id, args.api_key)
+                if suspension_status['suspended'] != is_suspended:
+                    is_suspended = suspension_status['suspended']
+                    if is_suspended:
+                        print(f"DRIVER SUSPENDED: {suspension_status['message']}")
+                        # Display suspension message on screen
+                        suspension_frame = create_suspension_message(suspension_status['message'])
+                        cv2.imshow('Driver Monitoring', suspension_frame)
+                        # Play audio message
+                        detector.play_suspension_message(suspension_status['message'])
+                    else:
+                        print(f"DRIVER UNSUSPENDED: {suspension_status['message']}")
+                        # Display unsuspension message
+                        unsuspension_frame = create_unsuspension_message(suspension_status['message'])
+                        cv2.imshow('Driver Monitoring', unsuspension_frame)
+                        # Play audio message
+                        detector.play_suspension_message(suspension_status['message'])
+                last_suspension_check = current_time
+
+            # Skip processing if suspended
+            if is_suspended:
+                ret, frame = cap.read()
+                if not ret:
+                    print("Failed to grab frame")
+                    break
+                
+                # Display suspension message
+                suspension_frame = create_suspension_message("YOU ARE SUSPENDED")
+                cv2.imshow('Driver Monitoring', suspension_frame)
+                
+                # Check for key press to exit
+                key = cv2.waitKey(1)
+                if key == 27:  # ESC key
+                    break
+                
+                # Sleep to reduce CPU usage
+                time.sleep(0.1)
+                continue
+
+            # Only process frames if we have an authenticated driver
+            if active_driver_id:
+                processed_frame, alert_detected, alert_type = detector.process_frame(frame)
+                
+                # Add driver username to the display
+                if active_driver_username:
+                    cv2.putText(processed_frame, f"Driver: {active_driver_username}", (10, processed_frame.shape[0] - 10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                    
+                cv2.imshow("Driver Monitor", processed_frame)
+
+                # Get current risk level
+                risk_level = detector.risk_level
+                risk_labels = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+                
+                # Check if we should record this alert based on cooldown
+                if alert_detected and data_sender and active_driver_id:
+                    record_alert = False
+                    
+                    if alert_type == "drowsiness" and (current_time - last_alert_time) > alert_cooldown:
+                        record_alert = True
+                        last_alert_time = current_time
+                    elif alert_type == "yawning" and (current_time - last_yawn_alert_time) > yawn_cooldown:
+                        record_alert = True
+                        last_yawn_alert_time = current_time
+                    elif alert_type == "microsleep":  # Always record microsleep events
+                        record_alert = True
+                        last_alert_time = current_time
+                        
+                    if record_alert:
+                        # Always include risk level in the detection data
+                        detection_data = {
+                            "type": alert_type,
+                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                            "risk_level": risk_level,
+                            "risk_label": risk_labels[risk_level]
+                        }
+                        # Add to queue instead of sending immediately
+                        queued_alerts.append(detection_data)
+                        print(f"Alert queued: {alert_type} with risk level: {risk_labels[risk_level]}")
+                        
+                        # Send risk level update directly - now API key is optional
+                        send_direct_risk_update(args.server, active_driver_id, risk_level, risk_labels[risk_level], args.api_key)
+                
+                # Send periodic risk level updates even when no alerts are detected
+                if data_sender and active_driver_id and (current_time - last_risk_update_time) > risk_update_interval:
+                    # Only send if risk level has changed or it's been a while since the last update
+                    if risk_level != last_sent_risk_level or (current_time - last_risk_update_time) > 30:
+                        # Send risk level update directly instead of queuing it as an alert
+                        send_direct_risk_update(args.server, active_driver_id, risk_level, risk_labels[risk_level], args.api_key)
+                        # Store data about this driver's status without adding to alert queue
+                        last_risk_update_time = current_time
+                        last_sent_risk_level = risk_level
+                        print(f"Status update sent directly with risk level: {risk_labels[risk_level]} for driver: {active_driver_username}")
+                    
+                # Send batched alerts periodically
+                if queued_alerts and (current_time - last_send_time) > send_interval:
+                    if data_sender:
+                        print(f"Sending batch of {len(queued_alerts)} alerts/updates")
+                        data_sender.send_batch_detection_data(queued_alerts, active_driver_id)
+                        queued_alerts = []
+                        last_send_time = current_time
+            else:
+                # If we don't have a driver ID yet, show the basic frame
+                cv2.putText(frame, "Attempting to authenticate driver...", (30, 60), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2)
+                cv2.imshow("Driver Monitor", frame)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
                 break
-            
-            # Sleep to reduce CPU usage
-            time.sleep(0.1)
-            continue
+            # NEW: Restart the script when 'r' key is pressed
+            if key == ord('r'):
+                print("Restarting driver monitor...")
+                python = sys.executable
+                os.execl(python, python, *sys.argv)
 
-        # Only process frames if we have an authenticated driver
-        if active_driver_id:
-            processed_frame, alert_detected, alert_type = detector.process_frame(frame)
+        # Send any remaining alerts before exiting
+        if queued_alerts and data_sender and active_driver_id:
+            data_sender.send_batch_detection_data(queued_alerts, active_driver_id)
             
-            # Add driver username to the display
-            if active_driver_username:
-                cv2.putText(processed_frame, f"Driver: {active_driver_username}", (10, processed_frame.shape[0] - 10), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                
-            cv2.imshow("Driver Monitor", processed_frame)
-
-            # Get current risk level
-            risk_level = detector.risk_level
-            risk_labels = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
-            
-            # Check if we should record this alert based on cooldown
-            if alert_detected and data_sender and active_driver_id:
-                record_alert = False
-                
-                if alert_type == "drowsiness" and (current_time - last_alert_time) > alert_cooldown:
-                    record_alert = True
-                    last_alert_time = current_time
-                elif alert_type == "yawning" and (current_time - last_yawn_alert_time) > yawn_cooldown:
-                    record_alert = True
-                    last_yawn_alert_time = current_time
-                elif alert_type == "microsleep":  # Always record microsleep events
-                    record_alert = True
-                    last_alert_time = current_time
-                    
-                if record_alert:
-                    # Always include risk level in the detection data
-                    detection_data = {
-                        "type": alert_type,
-                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                        "risk_level": risk_level,
-                        "risk_label": risk_labels[risk_level]
-                    }
-                    # Add to queue instead of sending immediately
-                    queued_alerts.append(detection_data)
-                    print(f"Alert queued: {alert_type} with risk level: {risk_labels[risk_level]}")
-                    
-                    # Send risk level update directly - now API key is optional
-                    send_direct_risk_update(args.server, active_driver_id, risk_level, risk_labels[risk_level], args.api_key)
-            
-            # Send periodic risk level updates even when no alerts are detected
-            if data_sender and active_driver_id and (current_time - last_risk_update_time) > risk_update_interval:
-                # Only send if risk level has changed or it's been a while since the last update
-                if risk_level != last_sent_risk_level or (current_time - last_risk_update_time) > 30:
-                    # Send risk level update directly instead of queuing it as an alert
-                    send_direct_risk_update(args.server, active_driver_id, risk_level, risk_labels[risk_level], args.api_key)
-                    # Store data about this driver's status without adding to alert queue
-                    last_risk_update_time = current_time
-                    last_sent_risk_level = risk_level
-                    print(f"Status update sent directly with risk level: {risk_labels[risk_level]} for driver: {active_driver_username}")
-                
-            # Send batched alerts periodically
-            if queued_alerts and (current_time - last_send_time) > send_interval:
-                if data_sender:
-                    print(f"Sending batch of {len(queued_alerts)} alerts/updates")
-                    data_sender.send_batch_detection_data(queued_alerts, active_driver_id)
-                    queued_alerts = []
-                    last_send_time = current_time
-        else:
-            # If we don't have a driver ID yet, show the basic frame
-            cv2.putText(frame, "Attempting to authenticate driver...", (30, 60), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2)
-            cv2.imshow("Driver Monitor", frame)
-
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        # NEW: Restart the script when 'r' key is pressed
-        if key == ord('r'):
-            print("Restarting driver monitor...")
-            python = sys.executable
-            os.execl(python, python, *sys.argv)
-
-    # Send any remaining alerts before exiting
-    if queued_alerts and data_sender and active_driver_id:
-        data_sender.send_batch_detection_data(queued_alerts, active_driver_id)
+        cap.release()
+        cv2.destroyAllWindows()
+    except Exception as e:
+        print(f"Fatal error in driver monitoring system: {e}")
+        traceback.print_exc()
+        return 1
         
-    cap.release()
-    cv2.destroyAllWindows()
+    return 0
 
 def fetch_driver_references(server_url, api_key=None):
     """Fetch all driver reference images from the server"""
@@ -579,4 +599,5 @@ def create_unsuspension_message(message):
     return frame
 
 if __name__ == "__main__":
-    main()
+    exit_code = main()
+    sys.exit(exit_code)

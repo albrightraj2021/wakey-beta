@@ -3,13 +3,11 @@ import os
 import time
 from datetime import datetime
 import dlib
-import pygame  # Added for sound support
-import base64
-from io import BytesIO
-from PIL import Image
-import threading
-import queue
 import numpy as np  # ADDED: Import numpy
+
+# Add better error handling for pygame initialization
+import pygame
+import warnings
 
 class DrowsinessDetector:
     """Advanced drowsiness detection using facial landmarks"""
@@ -19,21 +17,49 @@ class DrowsinessDetector:
         self.detector = dlib.get_frontal_face_detector()
         landmarks_path = os.path.join(os.path.dirname(__file__), 'shape_predictor_68_face_landmarks.dat')
         
-        # Initialize pygame for alarm sounds
-        pygame.mixer.init()
+        # Initialize sound capabilities with better error handling
+        self.audio_available = False
         self.alarm_enabled = True
         self.alarm_playing = False
         self.last_alarm_time = 0
         self.alarm_cooldown = 3.0  # seconds between alarm triggers
+        self.alarm_sounds = {}
+        
+        # Try to initialize pygame.mixer with multiple fallback options
+        try:
+            # First try: Default initialization
+            pygame.mixer.init()
+            self.audio_available = True
+            print("Audio system initialized with default settings")
+        except pygame.error as e:
+            print(f"Default audio initialization failed: {e}")
+            try:
+                # Second try: Explicit settings for compatibility
+                pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+                self.audio_available = True
+                print("Audio system initialized with explicit settings")
+            except pygame.error as e:
+                print(f"Explicit audio settings failed: {e}")
+                try:
+                    # Third try: Low quality fallback
+                    pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=1024)
+                    self.audio_available = True
+                    print("Audio system initialized with low-quality fallback")
+                except pygame.error as e:
+                    print(f"All audio initialization attempts failed: {e}")
+                    # Fall back to a dummy audio system
+                    warnings.warn("Audio system not available. Alarms will be visual only.")
+                    self.audio_available = False
         
         # Load alarm sounds for different severity levels
         self.sounds_dir = os.path.join(os.path.dirname(__file__), 'sounds')
-        self.alarm_sounds = {
-            'low': self.load_sound('low_alarm.wav'),
-            'medium': self.load_sound('medium_alarm.wav'),
-            'high': self.load_sound('high_alarm.wav'),
-            'critical': self.load_sound('critical_alarm.wav')
-        }
+        if self.audio_available:
+            self.alarm_sounds = {
+                'low': self.load_sound('low_alarm.wav'),
+                'medium': self.load_sound('medium_alarm.wav'),
+                'high': self.load_sound('high_alarm.wav'),
+                'critical': self.load_sound('critical_alarm.wav')
+            }
         
         # Add OpenCV face detector as fallback with optimized parameters
         self.cv_face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
@@ -347,12 +373,15 @@ class DrowsinessDetector:
 
     def load_sound(self, filename):
         """Load a sound file, with fallback to default if file not found"""
+        if not self.audio_available:
+            return None
+            
         filepath = os.path.join(self.sounds_dir, filename)
         if os.path.exists(filepath):
             try:
                 return pygame.mixer.Sound(filepath)
-            except:
-                print(f"Error loading sound file: {filepath}")
+            except Exception as e:
+                print(f"Error loading sound file {filepath}: {e}")
         else:
             print(f"Sound file not found: {filepath}, using fallback")
             
@@ -365,13 +394,20 @@ class DrowsinessDetector:
     
     def generate_default_beep(self):
         """Generate a simple beep sound as fallback"""
+        if not self.audio_available:
+            return None
+            
         # Generate a basic sound using pygame
-        pygame.mixer.Sound(buffer=np.sin(2 * np.pi * np.arange(44100) * 440 / 44100).astype(np.float32))
-        return pygame.mixer.Sound(buffer=np.sin(2 * np.pi * np.arange(44100) * 880 / 44100).astype(np.float32))
+        try:
+            data = np.sin(2 * np.pi * np.arange(22050) * 440 / 22050).astype(np.float32)
+            return pygame.mixer.Sound(buffer=data)
+        except Exception as e:
+            print(f"Error generating default beep: {e}")
+            return None
     
     def play_alarm(self, severity='medium'):
         """Play alarm sound based on severity level"""
-        if not self.alarm_enabled:
+        if not self.audio_available or not self.alarm_enabled:
             return
             
         current_time = time.time()
@@ -385,22 +421,30 @@ class DrowsinessDetector:
         self.stop_alarm()
         
         # Play appropriate alarm based on severity
-        if severity == 'critical':
-            self.alarm_sounds['critical'].play(loops=2)
-        elif severity == 'high':
-            self.alarm_sounds['high'].play(loops=1)
-        elif severity == 'medium':
-            self.alarm_sounds['medium'].play(loops=0)
-        else:
-            self.alarm_sounds['low'].play(loops=0)
-            
-        self.alarm_playing = True
+        sound = self.alarm_sounds.get(severity)
+        if sound:
+            try:
+                if severity == 'critical':
+                    sound.play(loops=2)
+                elif severity == 'high':
+                    sound.play(loops=1)
+                else:
+                    sound.play(loops=0)
+                self.alarm_playing = True
+            except Exception as e:
+                print(f"Error playing sound: {e}")
     
     def stop_alarm(self):
         """Stop any currently playing alarm"""
+        if not self.audio_available:
+            return
+            
         if self.alarm_playing:
-            pygame.mixer.stop()
-            self.alarm_playing = False
+            try:
+                pygame.mixer.stop()
+                self.alarm_playing = False
+            except Exception as e:
+                print(f"Error stopping alarm: {e}")
     
     def toggle_alarm(self, enabled=None):
         """Enable or disable alarm sounds"""
@@ -589,50 +633,6 @@ class DrowsinessDetector:
                 risk = 3
                 
             recent_alerts = sum(1 for alert in self.alert_history 
-                                if (now - alert['timestamp']).total_seconds() < 300)
-            if recent_alerts >= 3:
-                risk = max(2, risk)
-            
-            recent_microsleeps = sum(1 for alert in self.alert_history 
-                                     if alert['type'] == 'microsleep' and 
-                                     (now - alert['timestamp']).total_seconds() < 600)
-            if recent_microsleeps >= 2:
-                risk = 3
-                
-            if minutes_since_last_alert > (10/60) and self.risk_level >= 2:
-                risk = max(1, self.risk_level - 1)
-                
-            self.risk_level = risk
-        else:
-            self.risk_level = 0
-        
-        return self.risk_level
-    
-    def enhance_image_for_detection(self, image):
-        """Enhance image for better detection in varying lighting conditions"""
-        # Calculate average brightness
-        if len(image.shape) == 3:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = image.copy()
-            
-        avg_brightness = np.mean(gray)
-        
-        # Keep track of brightness trend
-        self.brightness_history.append(avg_brightness)
-        if len(self.brightness_history) > self.max_brightness_history:
-            self.brightness_history.pop(0)
-            
-        # Determine if in low light mode based on recent brightness history
-        avg_recent_brightness = np.mean(self.brightness_history)
-        self.low_light_mode = avg_recent_brightness < self.light_threshold
-        
-        # In low light, apply more aggressive enhancement
-        if self.low_light_mode:
-            # Increase enhancement for low-light conditions
-            clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
-            enhanced = clahe.apply(gray)
-            alpha = 1.8  # Increase contrast further
             beta = 40    # Increase brightness
             enhanced = cv2.convertScaleAbs(enhanced, alpha=alpha, beta=beta)
             enhanced = cv2.bilateralFilter(enhanced, 9, 75, 75)

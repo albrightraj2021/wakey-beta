@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Socket.IO Test</title>
+    <script src="https://cdn.socket.io/4.4.1/socket.io.min.js" integrity="sha384-fKnu0iswBIqyEKFNy4Yez1NXfh/ettMRyVNqwINUHNpN4Gn3He6ZipmJXfw67oyS" crossorigin="anonymous"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        #status {
+            padding: 10px;
+            margin-bottom: 20px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+        #messages {
+            border: 1px solid #ddd;
+            padding: 10px;
+            height: 300px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+            border-radius: 5px;
+        }
+        .success {
+            color: green;
+            font-weight: bold;
+        }
+        .error {
+            color: red;
+            font-weight: bold;
+        }
+        .message {
+            margin: 5px 0;
+            padding: 5px;
+            border-bottom: 1px solid #eee;
+        }
+        button {
+            padding: 8px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <h1>Socket.IO Test Page</h1>
+    <div id="status">Status: Disconnected</div>
+    <div id="messages"></div>
+    <button id="test-emit">Emit Test Event</button>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const statusDiv = document.getElementById('status');
+            const messagesDiv = document.getElementById('messages');
+            const testEmitBtn = document.getElementById('test-emit');
+            
+            function addMessage(msg, isError = false) {
+                const p = document.createElement('p');
+                p.className = 'message ' + (isError ? 'error' : '');
+                p.textContent = new Date().toLocaleTimeString() + ': ' + msg;
+                messagesDiv.appendChild(p);
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }
+            
+            try {
+                // Connect with explicit options
+                const socket = io(window.location.origin, {
+                    path: '/socket.io',
+                    reconnectionAttempts: 5,
+                    transports: ['websocket', 'polling']
+                });
+                
+                socket.on('connect', function() {
+                    statusDiv.innerHTML = 'Status: <span class="success">Connected</span>';
+                    addMessage('Connected to Socket.IO server');
+                    console.log('Connected to Socket.IO server');
+                });
+                
+                socket.on('disconnect', function() {
+                    statusDiv.innerHTML = 'Status: <span class="error">Disconnected</span>';
+                    addMessage('Disconnected from Socket.IO server', true);
+                    console.log('Disconnected from Socket.IO server');
+                });
+                
+                socket.on('connect_error', function(err) {
+                    statusDiv.innerHTML = 'Status: <span class="error">Connection Error</span>';
+                    addMessage('Connection error: ' + err, true);
+                    console.error('Connection error:', err);
+                });
+                
+                socket.on('test_event', function(data) {
+                    addMessage('Received test event: ' + JSON.stringify(data));
+                    console.log('Received test event:', data);
+                });
+                
+                // Test emit button
+                testEmitBtn.addEventListener('click', function() {
+                    addMessage('Sending test event...');
+                    fetch('/test_socketio')
+                        .then(res => res.json())
+                        .then(data => {
+                            if (data.success) {
+                                addMessage('Server emitted test event successfully');
+                            } else {
+                                addMessage('Server failed to emit test event: ' + data.message, true);
+                            }
+                        })
+                        .catch(err => {
+                            addMessage('Error calling test endpoint: ' + err, true);
+                        });
+                });
+                
+            } catch (e) {
+                statusDiv.innerHTML = 'Status: <span class="error">Error initializing</span>';
+                addMessage('Error initializing Socket.IO: ' + e.message, true);
+                console.error('Error initializing Socket.IO:', e);
+            }
+        });
+    </script>
+</body>
+</html>

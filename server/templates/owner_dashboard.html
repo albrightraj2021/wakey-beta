@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport"="width=device-width, initial-scale=1.0">
     <title>Fleet Owner Dashboard - Driver Drowsiness Detection</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css">
@@ -70,7 +70,18 @@
         .suspended-row {
             background-color: #f8d7da;
         }
+        .img-placeholder {
+            width: 64px;
+            height: 64px;
+            background-color: #e0e0e0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #666;
+            font-size: 12px;
+        }
     </style>
+    <script src="https://cdn.socket.io/4.4.1/socket.io.min.js" integrity="sha384-fKnu0iswBIqyEKFNy4Yez1NXfh/ettMRyVNqwINUHNpN4Gn3He6ZipmJXfw67oyS" crossorigin="anonymous"></script>
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
@@ -329,6 +340,33 @@
     </div>
     
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.socket.io/4.5.0/socket.io.min.js"></script>
+    <script>
+        const socket = io();
+
+        // Join the owner's WebSocket room
+        socket.emit('join', { user_type: 'owner', user_id: '{{ owner_id }}' });
+
+        // Listen for driver alerts
+        socket.on('driver_alert', function(data) {
+            const { driver_name, alert_type } = data;
+            const message = `${driver_name} is ${alert_type.toUpperCase()}`;
+            
+            // Display browser notification
+            if (Notification.permission === "granted") {
+                new Notification("Driver Alert", { body: message });
+            } else if (Notification.permission !== "denied") {
+                Notification.requestPermission().then(permission => {
+                    if (permission === "granted") {
+                        new Notification("Driver Alert", { body: message });
+                    }
+                });
+            }
+
+            // Optionally, update the UI with the alert
+            console.log(message);
+        });
+    </script>
     <script>
         // Function to update dashboard information
         function updateDashboardInfo() {
@@ -686,5 +724,133 @@
         });
       });
     </script>
+    <script>
+    // Check if notification permission is already granted
+    if (Notification.permission !== "granted") {
+        Notification.requestPermission();
+    }
+
+    // Function to show browser notification
+    function showNotification(title, message) {
+        if (Notification.permission === "granted") {
+            const notification = new Notification(title, {
+                body: message,
+                icon: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZjAwMDAiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMTggOGE2IDYgMCAwIDAtOC40OS01Ljk0QzUuNTcgMi43NyAzIDE1LjUyIDMgMTUuNTJhOC45IDguOSAwIDAgMCAxLjU1IDIuODRMOS40MiAyM2guMWE3IDcgMCAwIDAgNC41Mi0uODQgOSA5IDAgMCAwIDQtMyAxMCAxMCAwIDAgMCAxLjk1LTQuNEMzMS45NyA5LjQ1IDIwIDAgMjAgMGgtLjAxYy0uNjMuMDEtMS4yNy4xNy0xLjg1LjVhOCA4IDAgMCAwIDAgNy41IDYgNiAwIDAgMS0xIDBjLS4zLS45My0uMy0xLjg3IDAtMi44enkiLz48L3N2Zz4='
+            });
+            
+            notification.onclick = function() {
+                window.focus();
+                this.close();
+            };
+        }
+    }
+
+    // Socket.IO connection handling - fix duplicate declaration
+    var socketConnected = false;
+    var socketio = null;
+    
+    // Only try to connect if the io object exists
+    if (typeof io !== 'undefined') {
+        try {
+            // Connect with explicit URL and path
+            socketio = io.connect(window.location.origin, {
+                path: '/socket.io',
+                reconnectionAttempts: 5,
+                transports: ['websocket', 'polling']
+            });
+            
+            socketio.on('connect', function() {
+                console.log('Connected to Socket.IO server');
+                socketConnected = true;
+                
+                // Join the owner's WebSocket room
+                socketio.emit('join', { 
+                    user_type: 'owner', 
+                    user_id: {{ owner_id }} 
+                });
+            });
+            
+            socketio.on('connect_error', function(error) {
+                console.log('Socket.IO connection error:', error);
+                // Fall back to polling after connection error
+                startPolling();
+            });
+            
+            socketio.on('joined', function(data) {
+                console.log('Joined room:', data.room);
+            });
+            
+            socketio.on('driver_alert', function(data) {
+                const { driver_id, driver_name, alert_type } = data;
+                const message = `${driver_name} is ${alert_type.toUpperCase()}`;
+                
+                // Display browser notification
+                showNotification("Driver Alert", message);
+                
+                // You can also add the alert to a notifications area in the UI
+                // For example, add it to a notification container
+                displayAlertInUI(driver_id, driver_name, alert_type);
+            });
+        } catch (e) {
+            console.log('Error initializing Socket.IO:', e);
+            startPolling();
+        }
+    } else {
+        console.log("Socket.IO client library not loaded, falling back to polling");
+        startPolling();
+    }
+    
+    function displayAlertInUI(driverId, driverName, alertType) {
+        // Create a visible alert on the page
+        const alertsContainer = document.getElementById('notifications-container') || 
+                               document.querySelector('.container');
+                               
+        if (alertsContainer) {
+            const alertDiv = document.createElement('div');
+            alertDiv.className = 'alert alert-danger alert-dismissible fade show';
+            alertDiv.innerHTML = `
+                <strong>Alert!</strong> Driver ${driverName} is ${alertType.toUpperCase()}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            `;
+            
+            // Add to the top of the container
+            alertsContainer.insertBefore(alertDiv, alertsContainer.firstChild);
+            
+            // Auto-dismiss after 10 seconds
+            setTimeout(() => {
+                alertDiv.classList.remove('show');
+                setTimeout(() => alertDiv.remove(), 500);
+            }, 10000);
+        }
+    }
+    
+    // Set up polling for notifications if WebSocket is not available
+    function startPolling() {
+        console.log("Starting notification polling");
+        pollNotifications();
+    }
+    
+    function pollNotifications() {
+        fetch('/api/pending_notifications')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success && data.notifications.length > 0) {
+                    data.notifications.forEach(notification => {
+                        const message = `${notification.driver_name} is ${notification.alert_type.toUpperCase()}`;
+                        showNotification("Driver Alert", message);
+                        displayAlertInUI(notification.driver_id, notification.driver_name, notification.alert_type);
+                    });
+                }
+            })
+            .catch(error => console.error("Error polling notifications:", error))
+            .finally(() => {
+                // Poll again after delay
+                setTimeout(pollNotifications, 5000);
+            });
+    }
+</script>
+
+<!-- Make sure there's a container for notifications -->
+<div id="notifications-container" class="mt-3"></div>
 </body>
 </html>

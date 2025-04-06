@@ -1,7 +1,7 @@
 from flask import Flask, render_template, request, redirect, url_for, session, Response, g, jsonify
 import mysql.connector
 import cv2
-import numpy as np
+import numpy as np  # Fix the typo from 'import numpy as n'
 import imagehash
 from PIL import Image
 import pyttsx3
@@ -13,6 +13,30 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import time
 import threading
 
+# Try to import eventlet for Socket.IO
+try:
+    import eventlet
+    eventlet.monkey_patch()
+    print("Eventlet monkey patching applied")
+    HAS_EVENTLET = True
+except ImportError:
+    print("Eventlet not available, using default threading mode")
+    HAS_EVENTLET = False
+
+# Try to import flask_socketio, but have a fallback if it doesn't work
+socketio = None
+try:
+    # Try to import specific compatible versions
+    from flask_socketio import SocketIO, emit, join_room
+    # Fix: Remove the extra closing parenthesis
+    socketio = SocketIO(cors_allowed_origins="*", logger=True, engineio_logger=True)
+    SOCKETIO_AVAILABLE = True
+    print("SocketIO successfully imported")
+except Exception as e:
+    print(f"Error importing flask_socketio: {e}")
+    print("Running without real-time notifications")
+    SOCKETIO_AVAILABLE = False
+
 import os
 import sys
 # Add the path so we can import modules
@@ -23,7 +47,12 @@ app = Flask(__name__,
             static_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static'))
 app.secret_key = 'drowsiness_detection_secret_key'
 
-# Database connection
+# Initialize SocketIO if available
+if SOCKETIO_AVAILABLE:
+    socketio.init_app(app)
+    print("SocketIO initialized with app")
+
+# Database connection 
 def get_db_connection():
     return mysql.connector.connect(
         host="localhost",
@@ -91,9 +120,8 @@ def register():
         conn.commit()
         cursor.close()
         conn.close()
-        
         return redirect(url_for('login'))
-    
+        
     return render_template('register.html')
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -149,7 +177,6 @@ def owner_dashboard():
     
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    
     # Get all drivers associated with this owner
     cursor.execute("""
         SELECT u.id, u.username, u.email 
@@ -157,12 +184,11 @@ def owner_dashboard():
         JOIN driver_owner do ON u.id = do.driver_id
         WHERE do.owner_id = %s AND u.user_type = 'driver'
     """, (session['user_id'],))
-    
     drivers = cursor.fetchall()
     cursor.close()
     conn.close()
     
-    return render_template('owner_dashboard.html', drivers=drivers)
+    return render_template('owner_dashboard.html', drivers=drivers, owner_id=session['user_id'])
 
 @app.route('/driver/dashboard')
 def driver_dashboard():
@@ -267,12 +293,12 @@ def register_driver():
         cursor.close()
         conn.close()
         return redirect(url_for('owner_dashboard'))
+        
     return render_template('register_driver.html')
 
 # Fix the import path for the drowsiness detection module
 # Change this line:
 # from driver_module.advanced_detection import detect_drowsiness_in_feed
-
 # To:
 import sys
 import os
@@ -389,7 +415,7 @@ def detect_drowsiness_in_feed(user_id=None, db_connection_func=None):
                         last_alert_time = current_time
                 else:
                     yawn_confidence = max(0, yawn_confidence - 0.5)
-                        
+                
                 if should_alert:
                     # Record alert in database
                     if db_connection_func and user_id:
@@ -406,6 +432,9 @@ def detect_drowsiness_in_feed(user_id=None, db_connection_func=None):
                             print(f"{alert_type.capitalize()} alert recorded for user {user_id}")
                         except Exception as e:
                             print(f"Error recording alert: {e}")
+                    
+                    # Notify owner in real-time
+                    notify_owner(driver_id=user_id, alert_type=alert_type)
                     
                     # Alert notification (voice or visual)
                     # Non-blocking alert that doesn't require pyttsx3 (which can cause threading issues)
@@ -430,11 +459,10 @@ def detect_drowsiness_in_feed(user_id=None, db_connection_func=None):
             ret, buffer = cv2.imencode('.jpg', processed_frame)
             if not ret:
                 continue
-                
+            
             frame_bytes = buffer.tobytes()
             yield (b'--frame\r\n'
                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-                
     except Exception as e:
         print(f"Fatal error in detection: {e}")
     finally:
@@ -445,7 +473,6 @@ def generate_frames(user_id=None):
     """Generate video frames with drowsiness detection"""
     # This function is called outside request context, so we need to pass user_id
     print(f"Starting video feed for user ID: {user_id}")
-    
     # Use our advanced detection module that handles the camera, detection, and yields frames
     return detect_drowsiness_in_feed(user_id=user_id, db_connection_func=get_db_connection)
 
@@ -453,10 +480,8 @@ def generate_frames(user_id=None):
 def video_feed():
     if 'user_id' not in session:
         return redirect(url_for('login'))
-    
     # Extract user_id from session before entering the generator function
     user_id = session.get('user_id')
-    
     # Pass the user_id directly to generate_frames
     return Response(generate_frames(user_id=user_id), 
                    mimetype='multipart/x-mixed-replace; boundary=frame')
@@ -466,6 +491,7 @@ def capture_reference():
     if 'user_id' not in session:
         return redirect(url_for('login'))
     
+    user_id = session.get('user_id')
     if request.method == 'POST':
         # Get the captured image from the form
         image_data = request.form['image_data']
@@ -485,7 +511,7 @@ def capture_reference():
                 image_data_b64 = image_data.split(',')[1]
             else:
                 image_data_b64 = image_data
-                
+            
             # Decode and convert to OpenCV format
             img_bytes = base64.b64decode(image_data_b64)
             img = Image.open(BytesIO(img_bytes))
@@ -495,11 +521,10 @@ def capture_reference():
             gray_img = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
             face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
             faces = face_cascade.detectMultiScale(gray_img, scaleFactor=1.1, minNeighbors=5)
-            
+                
             if len(faces) == 0:
                 return render_template('capture_reference.html', 
                                       error="No face detected in the image. Please try again with better lighting and positioning.")
-            
             if len(faces) > 1:
                 return render_template('capture_reference.html', 
                                       error="Multiple faces detected. Please ensure only your face is in the frame.")
@@ -507,7 +532,6 @@ def capture_reference():
             # Save to database - original image_data includes the MIME type prefix
             conn = get_db_connection()
             cursor = conn.cursor()
-            
             cursor.execute(
                 "UPDATE users SET reference_image = %s WHERE id = %s",
                 (image_data, session['user_id'])
@@ -525,7 +549,7 @@ def capture_reference():
         except Exception as e:
             print(f"Error processing reference image: {e}")
             return render_template('capture_reference.html', error=f"Error saving image: {str(e)}")
-    
+            
     return render_template('capture_reference.html')
 
 @app.route('/view_alerts')
@@ -562,7 +586,7 @@ def view_alerts():
             AND a.alert_type != 'status_update'
         """
         params = [session['user_id']]
-
+        
         # Add filters
         if date_filter:
             query += " AND DATE(a.timestamp) = %s"
@@ -597,13 +621,12 @@ def view_alerts():
     
     return render_template('view_alerts.html', alerts=alerts, drivers=drivers, request=request)
 
-# ...existing code...
 @app.route('/update_reference/<int:driver_id>', methods=['POST'])
 def update_reference(driver_id):
     """Update a driver's reference image from the owner dashboard"""
     if 'user_id' not in session or session['user_type'] != 'owner':
         return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-
+    
     # Verify owner-driver relationship
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -617,24 +640,24 @@ def update_reference(driver_id):
         cursor.close()
         conn.close()
         return jsonify({'success': False, 'error': 'Not authorized for this driver'}), 403
-
+    
     data = request.get_json()
     image_data = data.get('image_data', '')
     if not image_data or 'data:image' not in image_data:
         return jsonify({'success': False, 'error': 'Invalid image data provided'}), 400
-
+    
     try:
         import numpy as np
         import base64
         from io import BytesIO
         from PIL import Image
-
+        
         # Extract base64 portion if present
         if ',' in image_data:
             image_data_b64 = image_data.split(',')[1]
         else:
             image_data_b64 = image_data
-
+        
         img_bytes = base64.b64decode(image_data_b64)
         img = Image.open(BytesIO(img_bytes))
         img_np = np.array(img)
@@ -657,7 +680,6 @@ def update_reference(driver_id):
     except Exception as e:
         print(f"Error processing reference image: {e}")
         return jsonify({'success': False, 'error': f"Error saving image: {str(e)}"}), 500
-
 
 # API routes for AJAX calls
 @app.route('/api/recent_alerts')
@@ -686,7 +708,7 @@ def api_recent_alerts():
             SELECT * FROM alerts 
             WHERE user_id = %s
             AND alert_type != 'status_update'
-            ORDER BY timestamp DESC 
+            ORDER BY timestamp DESC
             LIMIT 5
         """, (session['user_id'],))
     
@@ -877,6 +899,7 @@ def driver_alerts(driver_id):
         ORDER BY timestamp DESC    
     """, (driver_id,))
     alerts = cursor.fetchall()
+    
     cursor.close()
     conn.close()
     
@@ -983,7 +1006,6 @@ def view_driver(driver_id):
     
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    
     # Verify that this driver is associated with the logged-in owner
     cursor.execute("""
         SELECT EXISTS(
@@ -1044,11 +1066,11 @@ def api_risk_level(driver_id):
             cursor.close()
             conn.close()
             return {"error": "Not authorized to view this driver", "success": False}, 403
-    elif session['user_type'] == 'driver':
+    elif session['user_type'] == 'driver': 
         # Drivers can only check themselves
         if driver_id != session['user_id']:
             return {"error": "Not authorized to view this driver", "success": False}, 403
-    
+        
     # Get risk level from database
     cursor.execute("SELECT risk_level FROM users WHERE id = %s", (driver_id,))
     result = cursor.fetchone()
@@ -1084,7 +1106,6 @@ def api_driver_authenticate():
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT * FROM users WHERE username = %s AND user_type = 'driver'", (username,))
         driver = cursor.fetchone()
-        
         cursor.close()
         conn.close()
         
@@ -1096,7 +1117,6 @@ def api_driver_authenticate():
             })
         else:
             return jsonify({'success': False, 'error': 'Invalid credentials'})
-    
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
@@ -1125,12 +1145,12 @@ def manage_driver_modules():
     except mysql.connector.Error as err:
         print(f"Database error: {err}")
         drivers = []
-        
+    
     cursor.close()
     conn.close()
     
     return render_template('manage_driver_modules.html', drivers=drivers)
-
+            
 # Add endpoint to generate API key for driver modules
 @app.route('/api/generate_driver_key/<int:driver_id>', methods=['POST'])
 def generate_driver_key(driver_id):
@@ -1171,7 +1191,6 @@ def generate_driver_key(driver_id):
         conn.commit()
         cursor.close()
         conn.close()
-        
         return jsonify({'success': True, 'api_key': api_key})
     except Exception as e:
         cursor.close()
@@ -1268,7 +1287,7 @@ def download_driver_module():
             
             cursor.execute("SELECT api_key FROM users WHERE id = %s", (driver_id,))
             result = cursor.fetchone()
-            
+            key = None
             if result and result.get('api_key'):
                 api_key = result['api_key']
             else:
@@ -1287,10 +1306,9 @@ def download_driver_module():
                     (api_key, driver_id)
                 )
                 conn.commit()
-            
             cursor.close()
             conn.close()
-        
+                
         # Create the ZIP file
         success = create_driver_module_zip(
             temp_path, 
@@ -1310,7 +1328,6 @@ def download_driver_module():
             )
         else:
             return render_template('error.html', error="Failed to create driver module package.")
-            
     except Exception as e:
         print(f"Error creating driver module package: {e}")
         return render_template('error.html', error=f"Error: {str(e)}")
@@ -1319,7 +1336,6 @@ def download_driver_module():
 @app.route('/api/driver/<int:driver_id>/info', methods=['GET'])
 def get_driver_info(driver_id):
     """API endpoint to get information for a specific driver"""
-    
     # Validate API key if provided
     auth_header = request.headers.get('Authorization')
     if (auth_header and auth_header.startswith('Bearer ')):
@@ -1331,7 +1347,6 @@ def get_driver_info(driver_id):
         result = cursor.fetchone()
         cursor.close()
         conn.close()
-        
         if not result:
             return jsonify({'success': False, 'error': 'Invalid API key'}), 401
     
@@ -1339,7 +1354,6 @@ def get_driver_info(driver_id):
         # Get driver information
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        
         cursor.execute("""
             SELECT id, username, email, first_name, last_name, risk_level
             FROM users
@@ -1352,7 +1366,7 @@ def get_driver_info(driver_id):
         
         if not driver:
             return jsonify({'success': False, 'error': 'Driver not found'}), 404
-            
+        
         # Format the response
         driver_info = {
             'id': driver['id'],
@@ -1367,7 +1381,6 @@ def get_driver_info(driver_id):
             'success': True,
             'driver': driver_info
         }), 200
-        
     except Exception as e:
         print(f"Error in get_driver_info endpoint: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -1387,7 +1400,6 @@ def get_driver_model(driver_id):
         result = cursor.fetchone()
         cursor.close()
         conn.close()
-        
         if not result or result.get('api_key') != api_key:
             return jsonify({'success': False, 'error': 'Invalid API key'}), 401
     
@@ -1395,7 +1407,6 @@ def get_driver_model(driver_id):
         # Get driver info and reference image
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        
         cursor.execute("""
             SELECT id, username, email, reference_image
             FROM users
@@ -1421,7 +1432,6 @@ def get_driver_model(driver_id):
             'success': True,
             'model_data': model_data
         }), 200
-        
     except Exception as e:
         print(f"Error in get_driver_model endpoint: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -1446,7 +1456,6 @@ def receive_driver_alerts():
         processed_count = 0
         conn = get_db_connection()
         cursor = conn.cursor()
-        
         for event in detection_events:
             try:
                 # Extract data
@@ -1473,10 +1482,8 @@ def receive_driver_alerts():
                 if 'image' in event:
                     # Here we'd save the image - omitted for brevity
                     pass
-                    
             except Exception as e:
                 print(f"Error processing event: {e}")
-        
         conn.commit()
         cursor.close()
         conn.close()
@@ -1486,7 +1493,6 @@ def receive_driver_alerts():
             'message': f'Processed {processed_count} detection events',
             'events_processed': processed_count
         }), 200
-        
     except Exception as e:
         print(f"Error in driver_alerts endpoint: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -1499,7 +1505,6 @@ def update_risk_level(driver_id):
         return jsonify({'success': False, 'error': 'Invalid request format'}), 400
     
     data = request.get_json()
-    
     # Check for required fields
     if 'risk_level' not in data:
         return jsonify({'success': False, 'error': 'Missing risk_level field'}), 400
@@ -1529,14 +1534,13 @@ def update_risk_level(driver_id):
                 if not cursor.fetchone():
                     cursor.execute("ALTER TABLE users ADD COLUMN risk_level INT DEFAULT 0")
                 
-                cursor.execute("SHOW COLUMNS FROM users LIKE 'risk_label'") 
+                cursor.execute("SHOW COLUMNS FROM users LIKE 'risk_label'")
                 if not cursor.fetchone():
                     cursor.execute("ALTER TABLE users ADD COLUMN risk_label VARCHAR(20) DEFAULT 'LOW'")
                 
                 cursor.execute("SHOW COLUMNS FROM users LIKE 'last_risk_update'")
                 if not cursor.fetchone():
                     cursor.execute("ALTER TABLE users ADD COLUMN last_risk_update TIMESTAMP")
-                
                 conn.commit()
             except Exception as inner_e:
                 print(f"Error adding columns: {inner_e}")
@@ -1567,7 +1571,6 @@ def update_risk_level(driver_id):
         conn.close()
         
         return jsonify({'success': True, 'message': 'Risk level updated successfully'})
-    
     except Exception as e:
         print(f"Error updating risk level: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -1620,7 +1623,6 @@ def get_risk_level(driver_id):
             'risk_label': risk_label,
             'is_online': is_online
         })
-        
     except Exception as e:
         print(f"Error getting risk level: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -1640,15 +1642,13 @@ def api_driver_references():
         result = cursor.fetchone()
         cursor.close()
         conn.close()
-        
         if not result:
             return jsonify({'success': False, 'error': 'Invalid API key'}), 401
-        
+    
     try:
         # Get all drivers with reference images
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        
         cursor.execute("""
             SELECT id, username, reference_image
             FROM users
@@ -1673,18 +1673,16 @@ def api_driver_references():
             'success': True,
             'drivers': drivers_with_images
         }), 200
-        
     except Exception as e:
         print(f"Error in driver_references endpoint: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 # Add these API endpoints to your Flask server
-
 @app.route('/api/toggle_suspension', methods=['POST'])
 def toggle_suspension():
     if 'user_id' not in session:
         return jsonify({'success': False, 'error': 'Not authenticated'})
-        
+    
     data = request.json
     driver_id = data.get('driver_id')
     action = data.get('action')
@@ -1692,7 +1690,7 @@ def toggle_suspension():
     
     if not driver_id or not action:
         return jsonify({'success': False, 'error': 'Missing driver_id or action'})
-        
+    
     # Check if current user is owner of this driver
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -1701,7 +1699,6 @@ def toggle_suspension():
         WHERE driver_id = %s AND owner_id = %s
     ''', (driver_id, session['user_id']))
     relationships = cursor.fetchall()  # Use fetchall() to ensure all results are consumed
-    
     if not relationships:
         cursor.close()
         conn.close()
@@ -1710,7 +1707,7 @@ def toggle_suspension():
     # Update driver suspension status
     suspended = 1 if action == 'suspend' else 0
     cursor.execute('''
-        UPDATE users
+        UPDATE users 
         SET suspended = %s, suspension_message = %s
         WHERE id = %s
     ''', (suspended, message, driver_id))
@@ -1739,7 +1736,7 @@ def check_suspension(driver_id):
     
     if not result:
         return jsonify({'success': False, 'error': 'Driver not found'})
-        
+    
     # Return the first (and likely only) result
     driver_data = result[0]
     return jsonify({
@@ -1748,5 +1745,178 @@ def check_suspension(driver_id):
         'message': driver_data['suspension_message'] or ''
     })
 
+# Emit alert to owner when driver is drowsy or yawning
+def notify_owner(driver_id, alert_type):
+    """Send real-time alert to the owner via WebSocket."""
+    if not SOCKETIO_AVAILABLE:
+        # Fallback if SocketIO is not available
+        print(f"Alert: Driver {driver_id} is {alert_type} (SocketIO not available)")
+        # Store notification in database for polling
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor(dictionary=True)
+            # Get the owner ID for this driver
+            cursor.execute("""
+                SELECT do.owner_id, u.username 
+                FROM driver_owner do
+                JOIN users u ON do.driver_id = u.id
+                WHERE do.driver_id = %s
+            """, (driver_id,))
+            result = cursor.fetchone()
+            if result:
+                owner_id = result['owner_id']
+                driver_name = result['username']
+                # Store notification in notifications table (create if doesn't exist)
+                try:
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS notifications (
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            owner_id INT NOT NULL,
+                            driver_id INT NOT NULL,
+                            driver_name VARCHAR(255) NOT NULL,
+                            alert_type VARCHAR(50) NOT NULL,
+                            timestamp DATETIME NOT NULL,
+                            is_read BOOLEAN DEFAULT FALSE
+                        )
+                    """)
+                    conn.commit()
+                    cursor.execute("""
+                        INSERT INTO notifications 
+                        (owner_id, driver_id, driver_name, alert_type, timestamp)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (owner_id, driver_id, driver_name, alert_type, datetime.now()))
+                    conn.commit()
+                except Exception as e:
+                    print(f"Error creating notifications: {e}")
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            print(f"Error in fallback notification: {e}")
+        return
+    
+    # If SocketIO is available, continue with WebSocket notification
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT do.owner_id, u.username 
+        FROM driver_owner do
+        JOIN users u ON do.driver_id = u.id
+        WHERE do.driver_id = %s
+    """, (driver_id,))
+    result = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    
+    if result:
+        owner_id = result['owner_id']
+        driver_name = result['username']
+        socketio.emit(
+            'driver_alert',
+            {'driver_id': driver_id, 'driver_name': driver_name, 'alert_type': alert_type},
+            room=f'owner_{owner_id}'
+        )
+
+# Add a polling endpoint for notifications when WebSockets are not available
+@app.route('/api/pending_notifications')
+def pending_notifications():
+    """Get pending notifications for the owner when WebSockets aren't available"""
+    if 'user_id' not in session or session['user_type'] != 'owner':
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Check if notifications table exists
+        cursor.execute("SHOW TABLES LIKE 'notifications'")
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({'success': True, 'notifications': []})
+        
+        # Get unread notifications for this owner
+        cursor.execute("""
+            SELECT id, driver_id, driver_name, alert_type, timestamp, is_read
+            FROM notifications
+            WHERE owner_id = %s AND is_read = FALSE
+            ORDER BY timestamp DESC
+        """, (session['user_id'],))
+        notifications = cursor.fetchall()
+        
+        # Convert datetime objects to strings
+        for notif in notifications:
+            notif['timestamp'] = notif['timestamp'].isoformat() if notif['timestamp'] else None
+        
+        # Mark these as read
+        if notifications:
+            notification_ids = [n['id'] for n in notifications]
+            placeholders = ', '.join(['%s'] * len(notification_ids))
+            cursor.execute(f"""
+                UPDATE notifications
+                SET is_read = TRUE
+                WHERE id IN ({placeholders})
+            """, notification_ids)
+            conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'notifications': notifications,
+            'socketio_available': SOCKETIO_AVAILABLE
+        })
+    except Exception as e:
+        print(f"Error getting notifications: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# Only define these if SocketIO is available
+if SOCKETIO_AVAILABLE:
+    @socketio.on('join')
+    def on_join(data):
+        """Join a WebSocket room for real-time notifications."""
+        user_type = data.get('user_type')
+        user_id = data.get('user_id')
+        if user_type == 'owner':
+            room = f'owner_{user_id}'
+            join_room(room)
+            emit('joined', {'room': room})
+
+# Add a test route for Socket.IO
+@app.route('/test_socketio')
+def test_socketio():
+    """Test route for Socket.IO functionality"""
+    if not SOCKETIO_AVAILABLE:
+        return jsonify({
+            'success': False, 
+            'message': 'Socket.IO is not available'
+        })
+        
+    # Try to emit a test event
+    try:
+        socketio.emit('test_event', {'data': 'Test message'})
+        return jsonify({
+            'success': True, 
+            'message': 'Test event emitted successfully'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False, 
+            'message': f'Error emitting test event: {str(e)}'
+        })
+
+# Serve the Socket.IO test page
+@app.route('/socketio_test')
+def socketio_test():
+    """Serve the Socket.IO test page"""
+    return render_template('test_socketio.html')
+
 if __name__ == '__main__':
-    app.run(debug=True, host="0.0.0.0")
+    if SOCKETIO_AVAILABLE:
+        if HAS_EVENTLET:
+            socketio.run(app, debug=True, host="0.0.0.0")
+        else:
+            # Use gevent or standard threading if eventlet not available
+            socketio.run(app, debug=True, host="0.0.0.0", allow_unsafe_werkzeug=True)
+    else:
+        app.run(debug=True, host="0.0.0.0")
