@@ -26,10 +26,10 @@ app.secret_key = 'drowsiness_detection_secret_key'
 # Database connection
 def get_db_connection():
     return mysql.connector.connect(
-        host="localhost",
-        user="root",
-        password="root",
-        database="distracted_driver"
+        host="sql12.freesqldatabase.com	",
+        user="sql12772041",
+        password="8QKhNixehE",
+        database="sql12772041"
     )
 
 def ensure_columns_exist():
