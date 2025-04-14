@@ -169,7 +169,39 @@ def driver_dashboard():
     if 'user_id' not in session or session['user_type'] != 'driver':
         return redirect(url_for('login'))
     
-    return render_template('driver_dashboard.html')
+    # Fetch vehicle information for this driver
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    # First check for active vehicle sessions
+    cursor.execute("""
+        SELECT vs.id, vs.vehicle_name, vs.license_plate, vs.session_start 
+        FROM vehicle_sessions vs 
+        WHERE vs.driver_id = %s AND vs.session_end IS NULL
+        ORDER BY vs.session_start DESC 
+        LIMIT 1
+    """, (session['user_id'],))
+    
+    active_vehicle = cursor.fetchone()
+    
+    # If no active session, get the most recent vehicle used by this driver
+    if not active_vehicle:
+        cursor.execute("""
+            SELECT vs.id, vs.vehicle_name, vs.license_plate, vs.session_start, vs.session_end
+            FROM vehicle_sessions vs
+            WHERE vs.driver_id = %s
+            ORDER BY vs.session_start DESC
+            LIMIT 1
+        """, (session['user_id'],))
+        recent_vehicle = cursor.fetchone()
+        vehicle = recent_vehicle
+    else:
+        vehicle = active_vehicle
+    
+    cursor.close()
+    conn.close()
+    
+    return render_template('driver_dashboard.html', vehicle=vehicle)
 
 # Driver registration and reference photo capture
 @app.route('/register_driver', methods=['GET', 'POST'])
@@ -1747,6 +1779,138 @@ def check_suspension(driver_id):
         'suspended': bool(driver_data['suspended']),
         'message': driver_data['suspension_message'] or ''
     })
+
+# Add new endpoint for vehicle registration
+@app.route('/api/register_vehicle/<int:driver_id>', methods=['POST'])
+def register_vehicle(driver_id):
+    """API endpoint to register vehicle details for a driver monitoring session"""
+    try:
+        # Parse the data
+        data = request.json
+        vehicle_name = data.get('vehicle_name')
+        license_plate = data.get('license_plate')
+        session_start = data.get('session_start')
+        
+        if not session_start:
+            # Default to current time if not provided
+            session_start = datetime.now().isoformat()
+            
+        # Connect to database
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Check if driver exists
+        cursor.execute("SELECT id FROM users WHERE id = %s AND user_type = 'driver'", (driver_id,))
+        driver = cursor.fetchone()
+        
+        if not driver:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Driver not found'}), 404
+            
+        # Check if we need to create vehicle_sessions table
+        try:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS vehicle_sessions (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    driver_id INT NOT NULL,
+                    vehicle_name VARCHAR(100),
+                    license_plate VARCHAR(20),
+                    session_start DATETIME NOT NULL,
+                    session_end DATETIME,
+                    FOREIGN KEY (driver_id) REFERENCES users(id) ON DELETE CASCADE
+                )
+            """)
+            conn.commit()
+        except Exception as e:
+            print(f"Error creating vehicle_sessions table: {e}")
+            # Continue anyway as the table might already exist
+        
+        # Insert the new vehicle session
+        try:
+            cursor.execute("""
+                INSERT INTO vehicle_sessions 
+                (driver_id, vehicle_name, license_plate, session_start) 
+                VALUES (%s, %s, %s, %s)
+            """, (driver_id, vehicle_name, license_plate, session_start))
+            conn.commit()
+            
+            session_id = cursor.lastrowid
+            
+            # Return success response with session ID
+            response = {
+                'success': True, 
+                'message': 'Vehicle details registered successfully',
+                'session_id': session_id
+            }
+            
+            cursor.close()
+            conn.close()
+            return jsonify(response), 200
+            
+        except Exception as e:
+            print(f"Error inserting vehicle session: {e}")
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': str(e)}), 500
+        
+    except Exception as e:
+        print(f"Error in register_vehicle endpoint: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/driver_vehicle/<int:driver_id>')
+def api_driver_vehicle(driver_id):
+    """API endpoint to get vehicle information for a driver"""
+    if 'user_id' not in session:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    
+    # Check permissions
+    if session['user_type'] == 'owner':
+        # Owner can check any of their drivers
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT EXISTS(
+                SELECT 1 FROM driver_owner 
+                WHERE driver_id = %s AND owner_id = %s
+            ) as is_associated
+        """, (driver_id, session['user_id']))
+        
+        result = cursor.fetchone()
+        if not result or not result['is_associated']:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Not authorized to view this driver"}), 403
+    elif session['user_type'] == 'driver':
+        # Drivers can only check themselves
+        if driver_id != session['user_id']:
+            return jsonify({"success": False, "error": "Not authorized to view this driver"}), 403
+    
+    # Get vehicle info from database
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT id, vehicle_name, license_plate, session_start, session_end
+        FROM vehicle_sessions
+        WHERE driver_id = %s
+        ORDER BY session_start DESC
+        LIMIT 1
+    """, (driver_id,))
+    
+    vehicle = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    
+    if not vehicle:
+        return jsonify({"success": True, "vehicle": None})
+    
+    # Format datetime objects for JSON serialization
+    if vehicle.get('session_start'):
+        vehicle['session_start'] = vehicle['session_start'].isoformat()
+    if vehicle.get('session_end'):
+        vehicle['session_end'] = vehicle['session_end'].isoformat()
+    
+    return jsonify({"success": True, "vehicle": vehicle})
 
 if __name__ == '__main__':
     app.run(debug=True, host="0.0.0.0")

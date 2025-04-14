@@ -169,6 +169,7 @@
                             <tr>
                                 <th>Name</th>
                                 <th>Email</th>
+                                <th>Current Vehicle</th>
                                 <th>Risk Level</th>
                                 <th>Status</th>
                                 <th>Actions</th>
@@ -179,6 +180,13 @@
                                 <tr id="driver-row-{{ driver.id }}" class="{% if driver.suspended %}suspended-row{% endif %}">
                                     <td>{{ driver.username }}</td>
                                     <td>{{ driver.email }}</td>
+                                    <td>
+                                        <span class="driver-vehicle" data-driver-id="{{ driver.id }}">
+                                            <div class="spinner-border spinner-border-sm" role="status">
+                                                <span class="visually-hidden">Loading...</span>
+                                            </div>
+                                        </span>
+                                    </td>
                                     <td>
                                         <span class="driver-risk-level" data-driver-id="{{ driver.id }}">
                                             <div class="spinner-border spinner-border-sm" role="status">
@@ -417,6 +425,7 @@
             // Update driver risk levels and status
             const driverRiskElements = document.querySelectorAll('.driver-risk-level');
             const driverStatusElements = document.querySelectorAll('.driver-status');
+            const driverVehicleElements = document.querySelectorAll('.driver-vehicle');
             
             let activeCount = 0;
             let highRiskCount = 0;
@@ -424,6 +433,53 @@
             // Create arrays to track all fetch promises
             const riskPromises = [];
             const statusPromises = [];
+            const vehiclePromises = [];
+            
+            // Process each driver's vehicle information
+            driverVehicleElements.forEach(element => {
+                const driverId = element.getAttribute('data-driver-id');
+                
+                // Get vehicle information
+                const vehiclePromise = fetch(`/api/driver_vehicle/${driverId}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        // Check if driver is active (with separate fetch to driver_module_status)
+                        return fetch(`/api/driver_module_status/${driverId}`)
+                            .then(statusResponse => statusResponse.json())
+                            .then(statusData => {
+                                const isActive = statusData.success && statusData.is_active;
+                                
+                                if (data.success && data.vehicle) {
+                                    let vehicleInfo = data.vehicle.vehicle_name || 'Unknown';
+                                    if (data.vehicle.license_plate) {
+                                        vehicleInfo += ` (${data.vehicle.license_plate})`;
+                                    }
+                                    
+                                    if (data.vehicle.session_end === null && isActive) {
+                                        // Active session with active driver
+                                        element.innerHTML = `<span class="text-success"><i class="bi bi-truck"></i> ${vehicleInfo}</span>`;
+                                    } else if (data.vehicle.session_end === null && !isActive) {
+                                        // Vehicle assigned but driver inactive
+                                        element.innerHTML = `<span class="text-warning"><i class="bi bi-truck"></i> ${vehicleInfo} (Idle)</span>`;
+                                    } else {
+                                        // Previous session
+                                        element.innerHTML = `<span class="text-muted"><i class="bi bi-clock-history"></i> ${vehicleInfo}</span>`;
+                                    }
+                                } else {
+                                    // No vehicle assigned
+                                    element.innerHTML = `<span class="text-secondary"><i class="bi bi-dash-circle"></i> No vehicle assigned</span>`;
+                                }
+                                
+                                return statusData; // Return for chaining
+                            });
+                    })
+                    .catch(error => {
+                        console.error(`Error fetching vehicle for driver ${driverId}:`, error);
+                        element.innerHTML = `<span class="text-danger">Error loading data</span>`;
+                    });
+                    
+                vehiclePromises.push(vehiclePromise);
+            });
             
             // Process each driver - collect risk level data
             driverRiskElements.forEach(element => {
@@ -490,7 +546,7 @@
             });
             
             // Wait for all promises to complete before updating counters
-            Promise.all([...riskPromises, ...statusPromises]).then(() => {
+            Promise.all([...riskPromises, ...statusPromises, ...vehiclePromises]).then(() => {
                 // Update counters once all requests are complete
                 document.getElementById('activeDrivers').textContent = activeCount;
                 document.getElementById('highRiskCount').textContent = highRiskCount;
