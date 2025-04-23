@@ -104,7 +104,47 @@
                 <a href="/owner/dashboard" class="btn btn-outline-secondary">Back to Dashboard</a>
             </div>
         </div>
-        
+
+        <!-- Vehicle Assignments Section -->
+        <div class="content-section mb-4">
+            <h3>Assigned Vehicles</h3>
+            <hr>
+            {% if vehicle_assignments %}
+                <div class="table-responsive">
+                    <table class="table table-bordered table-striped">
+                        <thead>
+                            <tr>
+                                <th>Vehicle Name</th>
+                                <th>Number Plate</th>
+                                <th>Session Start</th>
+                                <th>Session End</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for v in vehicle_assignments %}
+                            <tr>
+                                <td>{{ v.vehicle_name or 'N/A' }}</td>
+                                <td>{{ v.license_plate or 'N/A' }}</td>
+                                <td>
+                                    {{ v.session_start | replace('T', ' ') | default('N/A') }}
+                                </td>
+                                <td>
+                                    {% if v.session_end %}
+                                        {{ v.session_end | replace('T', ' ') }}
+                                    {% else %}
+                                        <span class="badge bg-success">Ongoing</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <div class="alert alert-info">No vehicle assignments found for this driver.</div>
+            {% endif %}
+        </div>
+
         <div class="row">
             <div class="col-lg-4">
                 <div class="content-section">

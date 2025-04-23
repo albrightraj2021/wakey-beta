@@ -17,8 +17,6 @@ def main():
     parser.add_argument("--server", type=str, help="Server URL", required=True)
     parser.add_argument("--driver-id", type=int, help="Driver ID (optional, will auto-detect if not provided)", required=False, default=None)
     parser.add_argument("--api-key", type=str, help="API Key (optional)", required=False)
-    parser.add_argument("--vehicle-name", type=str, help="Vehicle name/model (optional)", required=False)
-    parser.add_argument("--license-plate", type=str, help="Vehicle license plate (optional)", required=False)
     args = parser.parse_args()
 
     detector = DrowsinessDetector()
@@ -28,7 +26,7 @@ def main():
         # Initialize DataSender with server URL, API key is optional
         data_sender = DataSender(server_url=args.server, api_key=args.api_key if hasattr(args, 'api_key') else None)
 
-    cap = cv2.VideoCapture(1)
+    cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Error: Cannot open webcam")
         return
@@ -80,25 +78,11 @@ def main():
         if driver_info:
             active_driver_username = driver_info.get('username')
             print(f"Driver monitoring started for: {active_driver_username} (ID: {active_driver_id})")
-            
-            # Register vehicle details if provided
-            if args.vehicle_name or args.license_plate:
-                register_vehicle_details(
-                    args.server,
-                    active_driver_id,
-                    args.vehicle_name,
-                    args.license_plate,
-                    args.api_key
-                )
         else:
             print(f"Driver monitoring started for ID: {active_driver_id}")
     
     print(f"Connected to server: {args.server}")
     
-    # Store vehicle details for display
-    vehicle_name = args.vehicle_name
-    license_plate = args.license_plate
-
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -118,16 +102,6 @@ def main():
                     active_driver_id = driver_info['id']
                     active_driver_username = driver_info['username']
                     print(f"Driver authenticated! {active_driver_username} (ID: {active_driver_id})")
-                    
-                    # Register vehicle details if provided after automatic authentication
-                    if args.vehicle_name or args.license_plate:
-                        register_vehicle_details(
-                            args.server,
-                            active_driver_id,
-                            args.vehicle_name,
-                            args.license_plate,
-                            args.api_key
-                        )
                     
                     # Add an overlay to show successful authentication
                     cv2.putText(frame, f"Driver Authenticated: {active_driver_username}", (30, 60), 
@@ -195,14 +169,6 @@ def main():
                 cv2.putText(processed_frame, f"Driver: {active_driver_username}", (10, processed_frame.shape[0] - 10), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                 
-            # Add vehicle details to the display
-            if vehicle_name:
-                cv2.putText(processed_frame, f"Vehicle: {vehicle_name}", (10, processed_frame.shape[0] - 30), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            if license_plate:
-                cv2.putText(processed_frame, f"Plate: {license_plate}", (10, processed_frame.shape[0] - 50), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                
             cv2.imshow("Driver Monitor", processed_frame)
 
             # Get current risk level
@@ -236,14 +202,14 @@ def main():
                     print(f"Alert queued: {alert_type} with risk level: {risk_labels[risk_level]}")
                     
                     # Send risk level update directly - now API key is optional
-                    send_direct_risk_update(args.server, active_driver_id, risk_level, risk_labels[risk_level], args.api_key, vehicle_name, license_plate)
+                    send_direct_risk_update(args.server, active_driver_id, risk_level, risk_labels[risk_level], args.api_key)
             
             # Send periodic risk level updates even when no alerts are detected
             if data_sender and active_driver_id and (current_time - last_risk_update_time) > risk_update_interval:
                 # Only send if risk level has changed or it's been a while since the last update
                 if risk_level != last_sent_risk_level or (current_time - last_risk_update_time) > 30:
                     # Send risk level update directly instead of queuing it as an alert
-                    send_direct_risk_update(args.server, active_driver_id, risk_level, risk_labels[risk_level], args.api_key, vehicle_name, license_plate)
+                    send_direct_risk_update(args.server, active_driver_id, risk_level, risk_labels[risk_level], args.api_key)
                     # Store data about this driver's status without adding to alert queue
                     last_risk_update_time = current_time
                     last_sent_risk_level = risk_level
@@ -253,12 +219,6 @@ def main():
             if queued_alerts and (current_time - last_send_time) > send_interval:
                 if data_sender:
                     print(f"Sending batch of {len(queued_alerts)} alerts/updates")
-                    # Include vehicle details in the alerts
-                    for alert in queued_alerts:
-                        if vehicle_name:
-                            alert['vehicle_name'] = vehicle_name
-                        if license_plate:
-                            alert['license_plate'] = license_plate
                     data_sender.send_batch_detection_data(queued_alerts, active_driver_id)
                     queued_alerts = []
                     last_send_time = current_time
@@ -471,7 +431,7 @@ def authenticate_driver(frame, reference_images, detector):
         print(f"Error in authenticate_driver: {e}")
         return None
 
-def send_direct_risk_update(server_url, driver_id, risk_level, risk_label, api_key=None, vehicle_name=None, license_plate=None):
+def send_direct_risk_update(server_url, driver_id, risk_level, risk_label, api_key=None):
     """Send a direct risk level update to the server's risk_level endpoint"""
     if not server_url or not driver_id:
         return False
@@ -490,13 +450,6 @@ def send_direct_risk_update(server_url, driver_id, risk_level, risk_label, api_k
             'risk_level': risk_level,
             'risk_label': risk_label
         }
-        
-        # Include vehicle details if available
-        if vehicle_name:
-            payload['vehicle_name'] = vehicle_name
-            
-        if license_plate:
-            payload['license_plate'] = license_plate
 
         # Retry logic
         max_retries = 3
@@ -624,58 +577,6 @@ def create_unsuspension_message(message):
     cv2.putText(frame, "Monitoring will resume shortly", (150, 400), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
     
     return frame
-
-def register_vehicle_details(server_url, driver_id, vehicle_name=None, license_plate=None, api_key=None):
-    """Register vehicle details with the server for this monitoring session"""
-    if not server_url or not driver_id:
-        return False
-        
-    # Skip if no vehicle details provided
-    if not vehicle_name and not license_plate:
-        return True
-    
-    try:
-        # Construct the vehicle registration URL
-        vehicle_url = f"{server_url.rstrip('/')}/api/register_vehicle/{driver_id}"
-        
-        # Prepare headers
-        headers = {'Content-Type': 'application/json'}
-        if api_key:
-            headers['Authorization'] = f'Bearer {api_key}'
-        
-        # Prepare payload with available vehicle details
-        payload = {
-            'session_start': time.strftime("%Y-%m-%dT%H:%M:%S")
-        }
-        
-        if vehicle_name:
-            payload['vehicle_name'] = vehicle_name
-            
-        if license_plate:
-            payload['license_plate'] = license_plate
-        
-        # Print debug info
-        print(f"Registering vehicle details: {vehicle_name or 'Unknown'} ({license_plate or 'No plate'})")
-        
-        # Send the request
-        response = requests.post(
-            vehicle_url,
-            headers=headers,
-            json=payload,
-            timeout=5
-        )
-        
-        if response.status_code == 200:
-            print(f"Successfully registered vehicle details")
-            return True
-        else:
-            print(f"Error registering vehicle details: {response.status_code}")
-            print(f"Response: {response.text}")
-            return False
-    
-    except Exception as e:
-        print(f"Error registering vehicle details: {e}")
-        return False
 
 if __name__ == "__main__":
     main()

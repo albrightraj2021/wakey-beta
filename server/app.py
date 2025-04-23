@@ -8,7 +8,7 @@ import pyttsx3
 import os
 import io
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 import time
 import threading
@@ -157,12 +157,20 @@ def owner_dashboard():
         JOIN driver_owner do ON u.id = do.driver_id
         WHERE do.owner_id = %s AND u.user_type = 'driver'
     """, (session['user_id'],))
-    
     drivers = cursor.fetchall()
+
+    # Get all vehicles owned by this owner
+    cursor.execute("""
+        SELECT id, vehicle_name, license_plate
+        FROM vehicles
+        WHERE owner_id = %s
+    """, (session['user_id'],))
+    vehicles = cursor.fetchall()
+
     cursor.close()
     conn.close()
     
-    return render_template('owner_dashboard.html', drivers=drivers)
+    return render_template('owner_dashboard.html', drivers=drivers, vehicles=vehicles)
 
 @app.route('/driver/dashboard')
 def driver_dashboard():
@@ -629,7 +637,6 @@ def view_alerts():
     
     return render_template('view_alerts.html', alerts=alerts, drivers=drivers, request=request)
 
-# ...existing code...
 @app.route('/update_reference/<int:driver_id>', methods=['POST'])
 def update_reference(driver_id):
     """Update a driver's reference image from the owner dashboard"""
@@ -690,493 +697,78 @@ def update_reference(driver_id):
         print(f"Error processing reference image: {e}")
         return jsonify({'success': False, 'error': f"Error saving image: {str(e)}"}), 500
 
-
-# API routes for AJAX calls
-@app.route('/api/recent_alerts')
-def api_recent_alerts():
-    if 'user_id' not in session:
-        return {"error": "Unauthorized"}, 401
-    
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
-    if session['user_type'] == 'owner':
-        # Get alerts for all drivers associated with this owner, filtering out status updates
-        cursor.execute("""
-            SELECT a.*, u.username 
-            FROM alerts a
-            JOIN users u ON a.user_id = u.id
-            JOIN driver_owner do ON u.id = do.driver_id
-            WHERE do.owner_id = %s
-            AND a.alert_type != 'status_update'
-            ORDER BY a.timestamp DESC
-            LIMIT 5
-        """, (session['user_id'],))
-    else:
-        # Get alerts for current driver, filtering out status updates
-        cursor.execute("""
-            SELECT * FROM alerts 
-            WHERE user_id = %s
-            AND alert_type != 'status_update'
-            ORDER BY timestamp DESC 
-            LIMIT 5
-        """, (session['user_id'],))
-    
-    alerts = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    
-    # Convert datetime objects to strings for JSON serialization 
-    for alert in alerts:
-        alert['timestamp'] = alert['timestamp'].isoformat()
-    
-    return {"alerts": alerts}
-
-@app.route('/api/alert_count')
-def api_alert_count():
-    if 'user_id' not in session:
-        return {"error": "Unauthorized"}, 401
-    
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
-    if session['user_type'] == 'owner':
-        # Count alerts for all drivers associated with this owner
-        cursor.execute("""
-            SELECT COUNT(*) as count
-            FROM alerts a
-            JOIN driver_owner do ON a.user_id = do.driver_id
-            WHERE do.owner_id = %s
-            AND a.alert_type != 'status_update'
-        """, (session['user_id'],))
-    else:
-        # Count alerts for current driver
-        cursor.execute("""
-            SELECT COUNT(*) as count 
-            FROM alerts 
-            WHERE user_id = %s
-            AND alert_type != 'status_update'
-        """, (session['user_id'],))
-    
-    result = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    
-    return {"count": result['count']}
-
-@app.route('/api/alert/<int:alert_id>')
-def api_alert_details(alert_id):
-    if 'user_id' not in session:
-        return {"error": "Unauthorized", "success": False}, 401
-    
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
-    if session['user_type'] == 'owner':
-        # Get alert details for owner, ensuring it belongs to one of their drivers
-        cursor.execute("""
-            SELECT a.*, u.username 
-            FROM alerts a
-            JOIN users u ON a.user_id = u.id
-            JOIN driver_owner do ON u.id = do.driver_id
-            WHERE a.id = %s AND do.owner_id = %s
-        """, (alert_id, session['user_id']))
-    else:
-        # Get alert details for driver, ensuring it belongs to them
-        cursor.execute("""
-            SELECT a.*, u.username 
-            FROM alerts a
-            JOIN users u ON a.user_id = u.id
-            WHERE a.id = %s AND a.user_id = %s
-        """, (alert_id, session['user_id']))
-    
-    alert = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    
-    if alert:
-        # Convert datetime objects to strings for JSON serialization
-        alert['timestamp'] = alert['timestamp'].isoformat()
-        return {"success": True, "alert": alert}
-    else:
-        return {"success": False, "error": "Alert not found"}
-
-@app.route('/api/export_alerts')
-def api_export_alerts():
-    if 'user_id' not in session:
-        return "Unauthorized", 401
-    
-    import csv
-    from io import StringIO
-    from flask import make_response
-    
-    # Get filter parameters
-    date_filter = request.args.get('date', '')
-    driver_filter = request.args.get('driver', '')
-    
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
-    # Base query
-    if session['user_type'] == 'owner':
-        query = """
-            SELECT a.id, a.alert_type, a.timestamp, u.username, u.email
-            FROM alerts a
-            JOIN users u ON a.user_id = u.id
-            JOIN driver_owner do ON u.id = do.driver_id
-            WHERE do.owner_id = %s
-            AND a.alert_type != 'status_update'
-        """
-        params = [session['user_id']]
-    else:
-        query = """
-            SELECT a.id, a.alert_type, a.timestamp, u.username, u.email
-            FROM alerts a
-            JOIN users u ON a.user_id = u.id
-            WHERE a.user_id = %s
-            AND a.alert_type != 'status_update'
-        """
-        params = [session['user_id']]
-    
-    # Add filters
-    if date_filter:
-        query += " AND DATE(a.timestamp) = %s"
-        params.append(date_filter)
-    if driver_filter and session['user_type'] == 'owner':
-        query += " AND u.id = %s"
-        params.append(driver_filter)
-    
-    query += " ORDER BY a.timestamp DESC"
-    
-    cursor.execute(query, tuple(params))
-    alerts = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    
-    # Create CSV file
-    output = StringIO()
-    csv_writer = csv.writer(output)
-    
-    # Write header
-    csv_writer.writerow(['Alert ID', 'Type', 'Timestamp', 'Driver', 'Email'])
-    
-    # Write data
-    for alert in alerts:
-        csv_writer.writerow([
-            alert['id'],
-            alert['alert_type'],
-            alert['timestamp'],
-            alert['username'],
-            alert['email']
-        ])
-    
-    # Create response
-    response = make_response(output.getvalue())
-    response.headers["Content-Disposition"] = "attachment; filename=alerts_export.csv"
-    response.headers["Content-type"] = "text/csv"
-    return response
-
-@app.route('/driver_alerts/<int:driver_id>')
-def driver_alerts(driver_id):
-    """View all alerts for a specific driver"""
-    if 'user_id' not in session or session['user_type'] != 'owner':
-        return redirect(url_for('login'))
-    
-    # Verify relationship between owner and driver
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("""
-        SELECT EXISTS(
-            SELECT 1 FROM driver_owner 
-            WHERE driver_id = %s AND owner_id = %s
-        ) as is_associated
-    """, (driver_id, session['user_id']))
-    result = cursor.fetchone()
-    if not result or not result['is_associated']:
-        cursor.close()
-        conn.close()
-        return redirect(url_for('owner_dashboard'))
-    
-    # Get driver info
-    cursor.execute("SELECT username FROM users WHERE id = %s", (driver_id,))
-    driver = cursor.fetchone()
-    
-    # Get all alerts for this driver
-    cursor.execute("""
-        SELECT * FROM alerts
-        WHERE user_id = %s
-        AND alert_type != 'status_update'
-        ORDER BY timestamp DESC    
-    """, (driver_id,))
-    alerts = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    
-    return render_template('driver_alerts.html', driver=driver, alerts=alerts, driver_id=driver_id)
-
-@app.route('/reset_password/<int:driver_id>', methods=['GET', 'POST'])
-def reset_password(driver_id):
-    """Reset password for a driver"""
-    if 'user_id' not in session or session['user_type'] != 'owner' and session.get('user_id') != driver_id:
-        return redirect(url_for('login'))
-    
-    # Verify relationship between owner and driver if reset is done by owner
-    if session['user_type'] == 'owner':
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT EXISTS(
-                SELECT 1 FROM driver_owner 
-                WHERE driver_id = %s AND owner_id = %s
-            ) as is_associated
-        """, (driver_id, session['user_id']))
-        result = cursor.fetchone()
-        if not result or not result['is_associated']:
-            cursor.close()
-            conn.close()
-            return redirect(url_for('owner_dashboard'))
-        cursor.execute("SELECT username, password FROM users WHERE id = %s", (driver_id,))
-        driver = cursor.fetchone()
-        cursor.close()
-        conn.close()
-    else:
-        # If a driver is resetting their own password, fetch their info
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT username, password FROM users WHERE id = %s", (driver_id,))
-        driver = cursor.fetchone()
-        cursor.close()
-        conn.close()
-    
-    if request.method == 'POST':
-        current_password = request.form['current_password']
-        new_password = request.form['new_password']
-        
-        # If the logged-in user is resetting their own password (driver), verify current password
-        if session.get('user_type') == 'driver' or (session['user_type'] != 'owner' and session.get('user_id') == driver_id):
-            if not check_password_hash(driver['password'], current_password):
-                return render_template('reset_password.html', driver=driver, driver_id=driver_id, error="Current password is incorrect")
-        
-        # Update password
-        hashed_password = generate_password_hash(new_password)
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE users SET password = %s WHERE id = %s",
-            (hashed_password, driver_id)
-        )
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        # Redirect back to driver view with success message
-        return redirect(url_for('view_driver', driver_id=driver_id))
-    
-    return render_template('reset_password.html', driver=driver, driver_id=driver_id)
-
-@app.route('/delete_driver/<int:driver_id>', methods=['POST'])
-def delete_driver(driver_id):
-    """Delete a driver from the system"""
-    if 'user_id' not in session or session['user_type'] != 'owner':
-        return redirect(url_for('login'))
-    
-    # Verify relationship between owner and driver
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT EXISTS(
-            SELECT 1 FROM driver_owner 
-            WHERE driver_id = %s AND owner_id = %s
-        ) as is_associated
-    """, (driver_id, session['user_id']))
-    result = cursor.fetchone()
-    if not result or result[0] == 0:  # Fixed condition: should check if relationship DOESN'T exist
-        cursor.close()
-        conn.close()
-        return redirect(url_for('owner_dashboard'))
-    
-    # Delete the driver-owner relationship first
-    cursor.execute("DELETE FROM driver_owner WHERE driver_id = %s", (driver_id,))
-    conn.commit()
-    
-    # Then delete the user (driver)
-    cursor.execute("DELETE FROM users WHERE id = %s", (driver_id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
-    
-    return redirect(url_for('owner_dashboard'))
-
 @app.route('/view_driver/<int:driver_id>')
 def view_driver(driver_id):
-    """View detailed information about a specific driver"""
     if 'user_id' not in session or session['user_type'] != 'owner':
         return redirect(url_for('login'))
-    
+
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    
-    # Verify that this driver is associated with the logged-in owner
+    # Check owner-driver relationship
     cursor.execute("""
-        SELECT EXISTS(
-            SELECT 1 FROM driver_owner 
-            WHERE driver_id = %s AND owner_id = %s
-        ) as is_associated
+        SELECT u.*, do.owner_id
+        FROM users u
+        JOIN driver_owner do ON u.id = do.driver_id
+        WHERE u.id = %s AND do.owner_id = %s
     """, (driver_id, session['user_id']))
-    result = cursor.fetchone()
-    if not result or not result['is_associated']:
+    driver = cursor.fetchone()
+    if not driver:
         cursor.close()
         conn.close()
-        return redirect(url_for('owner_dashboard'))
-    
-    # Get driver details
-    cursor.execute("""
-        SELECT u.id, u.username, u.email, u.registration_date
-        FROM users u
-        WHERE u.id = %s AND u.user_type = 'driver'
-    """, (driver_id,))
-    driver = cursor.fetchone()
-    
+        return "Driver not found or not associated with this owner.", 404
+
     # Get recent alerts for this driver
     cursor.execute("""
-        SELECT id, alert_type, timestamp
-        FROM alerts
-        WHERE user_id = %s
-        ORDER BY timestamp DESC
+        SELECT a.*
+        FROM alerts a
+        WHERE a.user_id = %s
+        AND a.alert_type != 'status_update'
+        ORDER BY a.timestamp DESC
         LIMIT 10
     """, (driver_id,))
     alerts = cursor.fetchall()
-    
+
+    # Get all vehicle assignments for this driver
+    cursor.execute("""
+        SELECT id, vehicle_name, license_plate, session_start, session_end
+        FROM vehicle_sessions
+        WHERE driver_id = %s
+        ORDER BY session_start DESC
+    """, (driver_id,))
+    vehicle_assignments = cursor.fetchall()
+    # Format datetimes for frontend
+    for v in vehicle_assignments:
+        if v.get('session_start'):
+            v['session_start'] = v['session_start'].isoformat() if hasattr(v['session_start'], 'isoformat') else str(v['session_start'])
+        if v.get('session_end'):
+            v['session_end'] = v['session_end'].isoformat() if v['session_end'] and hasattr(v['session_end'], 'isoformat') else (str(v['session_end']) if v['session_end'] else None)
+
     cursor.close()
     conn.close()
-    
-    return render_template('view_driver.html', driver=driver, alerts=alerts)
+    return render_template('view_driver.html', driver=driver, alerts=alerts, vehicle_assignments=vehicle_assignments)
 
-@app.route('/api/risk_level/<int:driver_id>')
-def api_risk_level(driver_id):
-    """Get the current risk level for a driver"""
-    if 'user_id' not in session:
-        return {"error": "Unauthorized", "success": False}, 401
-    
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
-    # Check permissions
-    if session['user_type'] == 'owner':
-        # Owner can check any of their drivers
-        cursor.execute("""
-            SELECT EXISTS(
-                SELECT 1 FROM driver_owner 
-                WHERE driver_id = %s AND owner_id = %s
-            ) as is_associated
-        """, (driver_id, session['user_id']))
-        
-        result = cursor.fetchone()
-        if not result or not result['is_associated']:
-            cursor.close()
-            conn.close()
-            return {"error": "Not authorized to view this driver", "success": False}, 403
-    elif session['user_type'] == 'driver':
-        # Drivers can only check themselves
-        if driver_id != session['user_id']:
-            return {"error": "Not authorized to view this driver", "success": False}, 403
-    
-    # Get risk level from database
-    cursor.execute("SELECT risk_level FROM users WHERE id = %s", (driver_id,))
-    result = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    
-    if not result:
-        return {"error": "Driver not found", "success": False}, 404
-    
-    # Map numeric levels to descriptions
-    risk_levels = ["Low", "Medium", "High", "Critical"]
-    risk_level = result['risk_level'] if result['risk_level'] is not None else 0
-    
-    return {
-        "success": True,
-        "risk_level": risk_level,
-        "risk_label": risk_levels[min(risk_level, 3)]
-    }
-
-# Add new API endpoint for driver module authentication
-@app.route('/api/driver/authenticate', methods=['POST'])
-def api_driver_authenticate():
-    """API endpoint for driver module to authenticate a driver"""
-    try:
-        data = request.json
-        username = data.get('username')
-        password = data.get('password')
-        
-        if not username or not password:
-            return jsonify({'success': False, 'error': 'Username and password required'})
-        
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM users WHERE username = %s AND user_type = 'driver'", (username,))
-        driver = cursor.fetchone()
-        
-        cursor.close()
-        conn.close()
-        
-        if driver and check_password_hash(driver['password'], password):
-            return jsonify({
-                'success': True,
-                'driver_id': driver['id'],
-                'username': driver['username']
-            })
-        else:
-            return jsonify({'success': False, 'error': 'Invalid credentials'})
-    
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-# Add a new route to manage driver modules
-@app.route('/manage_driver_modules')
-def manage_driver_modules():
-    """Admin page to manage driver modules"""
-    if 'user_id' not in session or session['user_type'] != 'owner':
-        return redirect(url_for('login'))
-        
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
-    try:
-        # Get all drivers associated with this owner
-        cursor.execute("""
-            SELECT u.id, u.username, u.email, 
-                   COALESCE(u.risk_level, 0) as risk_level,
-                   (SELECT MAX(timestamp) FROM alerts WHERE user_id = u.id) as last_alert
-            FROM users u
-            JOIN driver_owner do ON u.id = do.driver_id
-            WHERE do.owner_id = %s AND u.user_type = 'driver'
-        """, (session['user_id'],))
-            
-        drivers = cursor.fetchall()
-    except mysql.connector.Error as err:
-        print(f"Database error: {err}")
-        drivers = []
-        
-    cursor.close()
-    conn.close()
-    
-    return render_template('manage_driver_modules.html', drivers=drivers)
-
-# Add endpoint to generate API key for driver modules
-@app.route('/api/generate_driver_key/<int:driver_id>', methods=['POST'])
-def generate_driver_key(driver_id):
-    """Generate a new API key for a driver module"""
+# --- Vehicle assignment endpoints for scheduling ---
+@app.route('/api/assign_vehicle', methods=['POST'])
+def assign_vehicle():
+    """Owner assigns a vehicle to a driver for a scheduled period."""
     if 'user_id' not in session or session['user_type'] != 'owner':
         return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-    
-    # Verify relationship between owner and driver
+
+    data = request.json
+    driver_id = data.get('driver_id')
+    vehicle_name = data.get('vehicle_name')
+    license_plate = data.get('license_plate')
+    session_start = data.get('session_start')
+    session_end = data.get('session_end')
+
+    if not (driver_id and vehicle_name and license_plate and session_start and session_end):
+        return jsonify({'success': False, 'error': 'Missing required fields'}), 400
+
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
         SELECT EXISTS(
-            SELECT 1 FROM driver_owner 
-            WHERE driver_id = %s AND owner_id = %s
+            SELECT 1 FROM driver_owner WHERE driver_id = %s AND owner_id = %s
         ) as is_associated
     """, (driver_id, session['user_id']))
     result = cursor.fetchone()
@@ -1184,709 +776,114 @@ def generate_driver_key(driver_id):
         cursor.close()
         conn.close()
         return jsonify({'success': False, 'error': 'Not authorized for this driver'}), 403
-    
-    # Generate a new API key - in reality, use a more secure method
-    import secrets
-    api_key = secrets.token_urlsafe(32)
-    
-    # Store the API key in the database
-    # For this example, we'll add an api_key column to the users table if needed
-    try:
-        cursor.execute("SHOW COLUMNS FROM users LIKE 'api_key'")
-        if not cursor.fetchone():
-            cursor.execute("ALTER TABLE users ADD COLUMN api_key VARCHAR(64)")
-        
-        cursor.execute(
-            "UPDATE users SET api_key = %s WHERE id = %s",
-            (api_key, driver_id)
+
+    # --- Prevent double-booking of the same vehicle ---
+    # Check if the vehicle is already assigned to another driver during the requested period
+    cursor.execute("""
+        SELECT vs.id, vs.driver_id, vs.session_start, vs.session_end
+        FROM vehicle_sessions vs
+        WHERE vs.vehicle_name = %s AND vs.license_plate = %s
+        AND (
+            (vs.session_start <= %s AND (vs.session_end IS NULL OR vs.session_end >= %s)) OR
+            (vs.session_start >= %s AND vs.session_start <= %s)
         )
-        conn.commit()
+    """, (
+        vehicle_name, license_plate,
+        session_end, session_start,  # Overlap: existing session includes requested start
+        session_start, session_end   # Overlap: existing session starts within requested window
+    ))
+    conflict = cursor.fetchone()
+    if conflict:
         cursor.close()
         conn.close()
-        
-        return jsonify({'success': True, 'api_key': api_key})
+        return jsonify({
+            'success': False,
+            'error': 'This vehicle is already assigned to another driver during the selected time period.'
+        }), 409
+
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS vehicle_sessions (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                driver_id INT NOT NULL,
+                vehicle_name VARCHAR(100),
+                license_plate VARCHAR(20),
+                session_start DATETIME NOT NULL,
+                session_end DATETIME,
+                FOREIGN KEY (driver_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+        conn.commit()
+    except Exception as e:
+        print(f"Error ensuring vehicle_sessions table: {e}")
+
+    try:
+        cursor.execute("""
+            INSERT INTO vehicle_sessions
+            (driver_id, vehicle_name, license_plate, session_start, session_end)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (driver_id, vehicle_name, license_plate, session_start, session_end))
+        conn.commit()
+        session_id = cursor.lastrowid
+        cursor.close()
+        conn.close()
+        return jsonify({'success': True, 'session_id': session_id}), 200
     except Exception as e:
         cursor.close()
         conn.close()
         return jsonify({'success': False, 'error': str(e)}), 500
 
-# Add endpoint to check driver module status
-@app.route('/api/driver_module_status/<int:driver_id>')
-def driver_module_status(driver_id):
-    """Check the status of a driver module"""
-    if 'user_id' not in session:
+@app.route('/api/end_vehicle_assignment/<int:session_id>', methods=['POST'])
+def end_vehicle_assignment(session_id):
+    """Owner ends a vehicle assignment early by setting session_end to now."""
+    if 'user_id' not in session or session['user_type'] != 'owner':
         return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-    
-    if session['user_type'] == 'owner':
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT EXISTS(
-                SELECT 1 FROM driver_owner 
-                WHERE driver_id = %s AND owner_id = %s
-            ) as is_associated
-        """, (driver_id, session['user_id']))
-        result = cursor.fetchone()
-        if not result or not result['is_associated']:
-            cursor.close()
-            conn.close()
-            return jsonify({'success': False, 'error': 'Not authorized for this driver'}), 403
-    elif session['user_id'] != driver_id:
-        return jsonify({'success': False, 'error': 'Not authorized for this driver'}), 403
-    
+
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
-        SELECT MAX(timestamp) as last_alert, 
-               COUNT(*) as total_alerts,
-               risk_level
-        FROM alerts a
-        JOIN users u ON a.user_id = u.id
-        WHERE a.user_id = %s
-        GROUP BY u.risk_level
-    """, (driver_id,))
+        SELECT vs.id
+        FROM vehicle_sessions vs
+        JOIN driver_owner do ON vs.driver_id = do.driver_id
+        WHERE vs.id = %s AND do.owner_id = %s
+    """, (session_id, session['user_id']))
     result = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    
-    if result and result['last_alert']:
-        last_alert_time = result['last_alert']
-        time_diff = datetime.now() - last_alert_time
-        # Change threshold from 15 minutes to 60 seconds
-        is_active = time_diff.total_seconds() < 60
-        return jsonify({
-            'success': True,
-            'is_active': is_active,
-            'last_alert': last_alert_time.isoformat(),
-            'seconds_since_last_alert': round(time_diff.total_seconds(), 1),
-            'total_alerts': result['total_alerts'],
-            'risk_level': result['risk_level']
-        })
-    else:
-        return jsonify({
-            'success': True,
-            'is_active': False,
-            'message': 'No alerts recorded'
-        })
+    if not result:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': 'Not authorized for this assignment'}), 403
 
-@app.route('/download_driver_module')
-def download_driver_module():
-    """Endpoint for downloading the driver module package"""
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
-    
-    try:
-        # Import the driver module creation function
-        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        from download_driver import create_driver_module_zip
-        import tempfile
-        
-        # Create a temporary file for the ZIP
-        fd, temp_path = tempfile.mkstemp(suffix='.zip')
-        os.close(fd)
-        
-        # Get server URL
-        server_url = request.url_root.rstrip('/')
-        
-        # If user is a driver, include their ID in the config
-        driver_id = None
-        api_key = None
-        if session.get('user_type') == 'driver':
-            driver_id = session.get('user_id')
-            
-            # Generate an API key if needed
-            conn = get_db_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            cursor.execute("SELECT api_key FROM users WHERE id = %s", (driver_id,))
-            result = cursor.fetchone()
-            
-            if result and result.get('api_key'):
-                api_key = result['api_key']
-            else:
-                # Generate a new API key
-                import secrets
-                api_key = secrets.token_urlsafe(32)
-                
-                # Check if api_key column exists
-                cursor.execute("SHOW COLUMNS FROM users LIKE 'api_key'")
-                if not cursor.fetchone():
-                    cursor.execute("ALTER TABLE users ADD COLUMN api_key VARCHAR(64)")
-                
-                # Save the API key
-                cursor.execute(
-                    "UPDATE users SET api_key = %s WHERE id = %s",
-                    (api_key, driver_id)
-                )
-                conn.commit()
-            
-            cursor.close()
-            conn.close()
-        
-        # Create the ZIP file
-        success = create_driver_module_zip(
-            temp_path, 
-            server_url=server_url,
-            driver_id=driver_id,
-            api_key=api_key
-        )
-        
-        if success:
-            # Create response with the file
-            from flask import send_file
-            return send_file(
-                temp_path,
-                as_attachment=True,
-                download_name='driver_module.zip',
-                mimetype='application/zip'
-            )
-        else:
-            return render_template('error.html', error="Failed to create driver module package.")
-            
-    except Exception as e:
-        print(f"Error creating driver module package: {e}")
-        return render_template('error.html', error=f"Error: {str(e)}")
-
-# Add new API endpoint to get driver information by ID
-@app.route('/api/driver/<int:driver_id>/info', methods=['GET'])
-def get_driver_info(driver_id):
-    """API endpoint to get information for a specific driver"""
-    
-    # Validate API key if provided
-    auth_header = request.headers.get('Authorization')
-    if (auth_header and auth_header.startswith('Bearer ')):
-        api_key = auth_header.split(' ')[1]
-        # Verify API key is valid
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT id FROM users WHERE api_key = %s", (api_key,))
-        result = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        
-        if not result:
-            return jsonify({'success': False, 'error': 'Invalid API key'}), 401
-    
-    try:
-        # Get driver information
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        
-        cursor.execute("""
-            SELECT id, username, email, first_name, last_name, risk_level
-            FROM users
-            WHERE id = %s AND user_type = 'driver'
-        """, (driver_id,))
-        
-        driver = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        
-        if not driver:
-            return jsonify({'success': False, 'error': 'Driver not found'}), 404
-            
-        # Format the response
-        driver_info = {
-            'id': driver['id'],
-            'username': driver['username'],
-            'email': driver['email'],
-            'first_name': driver.get('first_name', ''),
-            'last_name': driver.get('last_name', ''),
-            'risk_level': driver.get('risk_level', 0)
-        }
-        
-        return jsonify({
-            'success': True,
-            'driver': driver_info
-        }), 200
-        
-    except Exception as e:
-        print(f"Error in get_driver_info endpoint: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# Add new API endpoint for driver module to get reference image
-@app.route('/api/driver_model/<int:driver_id>', methods=['GET'])
-def get_driver_model(driver_id):
-    """API endpoint to provide driver recognition model data"""
-    # Validate API key if provided
-    auth_header = request.headers.get('Authorization')
-    if (auth_header and auth_header.startswith('Bearer ')):
-        api_key = auth_header.split(' ')[1]
-        # Verify API key matches the driver's key
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT api_key FROM users WHERE id = %s AND user_type = 'driver'", (driver_id,))
-        result = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        
-        if not result or result.get('api_key') != api_key:
-            return jsonify({'success': False, 'error': 'Invalid API key'}), 401
-    
-    try:
-        # Get driver info and reference image
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        
-        cursor.execute("""
-            SELECT id, username, email, reference_image
-            FROM users
-            WHERE id = %s AND user_type = 'driver'
-        """, (driver_id,))
-        
-        driver = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        
-        if not driver or not driver.get('reference_image'):
-            return jsonify({'success': False, 'error': 'Driver has no reference image'}), 404
-        
-        # Create model data from the reference image
-        model_data = {
-            'driver_id': driver['id'],
-            'username': driver['username'],
-            'reference_image': driver['reference_image'],  # Base64 image data
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        return jsonify({
-            'success': True,
-            'model_data': model_data
-        }), 200
-        
-    except Exception as e:
-        print(f"Error in get_driver_model endpoint: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# Add endpoint to receive alerts from driver modules
-@app.route('/api/driver_alerts', methods=['POST'])
-def receive_driver_alerts():
-    """API endpoint to receive alert data from driver modules"""
-    try:
-        # Parse the data
-        data = request.json
-        driver_id = data.get('driver_id')
-        detection_events = data.get('detection_events', [])
-        
-        if not driver_id:
-            return jsonify({'success': False, 'error': 'Driver ID not provided'}), 400
-        
-        if not detection_events:
-            return jsonify({'success': True, 'message': 'No detection events to process'}), 200
-        
-        # Process each detection event
-        processed_count = 0
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        for event in detection_events:
-            try:
-                # Extract data
-                event_type = event.get('type', 'drowsiness')
-                timestamp_str = event.get('timestamp')
-                
-                # Parse timestamp if provided, otherwise use current time
-                if timestamp_str:
-                    try:
-                        timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                    except:
-                        timestamp = datetime.now()
-                else:
-                    timestamp = datetime.now()
-                
-                # Insert alert
-                cursor.execute(
-                    "INSERT INTO alerts (user_id, alert_type, timestamp) VALUES (%s, %s, %s)",
-                    (driver_id, event_type, timestamp)
-                )
-                processed_count += 1
-                
-                # Store image if provided (in a real system, we'd store to filesystem/database)
-                if 'image' in event:
-                    # Here we'd save the image - omitted for brevity
-                    pass
-                    
-            except Exception as e:
-                print(f"Error processing event: {e}")
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'message': f'Processed {processed_count} detection events',
-            'events_processed': processed_count
-        }), 200
-        
-    except Exception as e:
-        print(f"Error in driver_alerts endpoint: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# Add new endpoint for risk level updates
-@app.route('/api/update_risk_level/<int:driver_id>', methods=['POST'])
-def update_risk_level(driver_id):
-    """Endpoint for updating driver risk level data"""
-    if not request.is_json:
-        return jsonify({'success': False, 'error': 'Invalid request format'}), 400
-    
-    data = request.get_json()
-    
-    # Check for required fields
-    if 'risk_level' not in data:
-        return jsonify({'success': False, 'error': 'Missing risk_level field'}), 400
-    
-    try:
-        # Store the risk level in the database
-        risk_level = int(data['risk_level'])
-        risk_label = data.get('risk_label', '')
-        
-        # Connect to database
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # First, verify the columns exist or create them
-        # This is more robust than just checking if they exist
-        try:
-            # Use ALTER TABLE IGNORE to ignore errors if columns already exist
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS risk_level INT DEFAULT 0")
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS risk_label VARCHAR(20) DEFAULT 'LOW'")
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_risk_update TIMESTAMP")
-            conn.commit()
-        except Exception as e:
-            # If MySQL version doesn't support IF NOT EXISTS, catch the error and check manually
-            try:
-                # Check if columns exist one by one
-                cursor.execute("SHOW COLUMNS FROM users LIKE 'risk_level'")
-                if not cursor.fetchone():
-                    cursor.execute("ALTER TABLE users ADD COLUMN risk_level INT DEFAULT 0")
-                
-                cursor.execute("SHOW COLUMNS FROM users LIKE 'risk_label'") 
-                if not cursor.fetchone():
-                    cursor.execute("ALTER TABLE users ADD COLUMN risk_label VARCHAR(20) DEFAULT 'LOW'")
-                
-                cursor.execute("SHOW COLUMNS FROM users LIKE 'last_risk_update'")
-                if not cursor.fetchone():
-                    cursor.execute("ALTER TABLE users ADD COLUMN last_risk_update TIMESTAMP")
-                
-                conn.commit()
-            except Exception as inner_e:
-                print(f"Error adding columns: {inner_e}")
-                # Continue anyway, we'll try to update just the risk_level below
-        
-        try:
-            # Update all columns if available
-            cursor.execute('''
-                UPDATE users 
-                SET risk_level = %s, risk_label = %s, last_risk_update = %s 
-                WHERE id = %s
-            ''', (risk_level, risk_label, datetime.now().isoformat(), driver_id))
-        except Exception as update_error:
-            # If updating with risk_label fails, try without it
-            if "risk_label" in str(update_error):
-                print("Falling back to only updating risk_level")
-                cursor.execute('''
-                    UPDATE users 
-                    SET risk_level = %s 
-                    WHERE id = %s
-                ''', (risk_level, driver_id))
-            else:
-                # If some other error, re-raise it
-                raise update_error
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        return jsonify({'success': True, 'message': 'Risk level updated successfully'})
-    
-    except Exception as e:
-        print(f"Error updating risk level: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# Fix the get_risk_level function as well
-@app.route('/api/risk_level/<int:driver_id>', methods=['GET'])
-def get_risk_level(driver_id):
-    """Get current risk level for a driver"""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        
-        # Fetch risk level, risk label, and last risk update timestamp
-        cursor.execute(
-            'SELECT risk_level, risk_label, last_risk_update FROM users WHERE id = %s', 
-            (driver_id,)
-        )
-        driver = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        
-        if not driver:
-            return jsonify({'success': False, 'error': 'Driver not found'}), 404
-        
-        risk_level = driver.get('risk_level', 0) if driver.get('risk_level') is not None else 0
-        risk_label = driver.get('risk_label', 'LOW') if driver.get('risk_label') else 'LOW'
-        last_update = driver.get('last_risk_update')
-        
-        is_online = True
-        if last_update:
-            # If stored as string, convert to datetime
-            if isinstance(last_update, str):
-                last_update_dt = datetime.fromisoformat(last_update)
-            else:
-                last_update_dt = last_update
-            offline_threshold = 30  # seconds threshold
-            delta = datetime.now() - last_update_dt
-            if delta.total_seconds() > offline_threshold:
-                is_online = False
-                risk_label = "Offline"
-                risk_level = 0
-        else:
-            is_online = False
-            risk_label = "Offline"
-            risk_level = 0
-        
-        return jsonify({
-            'success': True,
-            'risk_level': risk_level,
-            'risk_label': risk_label,
-            'is_online': is_online
-        })
-        
-    except Exception as e:
-        print(f"Error getting risk level: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# Add new endpoint to provide driver reference images
-@app.route('/api/driver_references', methods=['GET'])
-def api_driver_references():
-    """API endpoint to provide reference images for all drivers with face recognition enabled"""
-    # Validate API key if provided
-    auth_header = request.headers.get('Authorization')
-    if (auth_header and auth_header.startswith('Bearer ')):
-        api_key = auth_header.split(' ')[1]
-        # Verify API key is valid for any driver
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT id FROM users WHERE api_key = %s AND user_type = 'driver'", (api_key,))
-        result = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        
-        if not result:
-            return jsonify({'success': False, 'error': 'Invalid API key'}), 401
-        
-    try:
-        # Get all drivers with reference images
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        
-        cursor.execute("""
-            SELECT id, username, reference_image
-            FROM users
-            WHERE user_type = 'driver' AND reference_image IS NOT NULL
-        """)
-        
-        drivers = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        
-        # Filter out drivers without reference images
-        drivers_with_images = []
-        for driver in drivers:
-            if driver.get('reference_image'):
-                drivers_with_images.append({
-                    'id': driver['id'],
-                    'username': driver['username'],
-                    'reference_image': driver['reference_image']
-                })
-        
-        return jsonify({
-            'success': True,
-            'drivers': drivers_with_images
-        }), 200
-        
-    except Exception as e:
-        print(f"Error in driver_references endpoint: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# Add these API endpoints to your Flask server
-
-@app.route('/api/toggle_suspension', methods=['POST'])
-def toggle_suspension():
-    if 'user_id' not in session:
-        return jsonify({'success': False, 'error': 'Not authenticated'})
-        
-    data = request.json
-    driver_id = data.get('driver_id')
-    action = data.get('action')
-    message = data.get('message', '')
-    
-    if not driver_id or not action:
-        return jsonify({'success': False, 'error': 'Missing driver_id or action'})
-        
-    # Check if current user is owner of this driver
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute('''
-        SELECT * FROM driver_owner 
-        WHERE driver_id = %s AND owner_id = %s
-    ''', (driver_id, session['user_id']))
-    relationships = cursor.fetchall()  # Use fetchall() to ensure all results are consumed
-    
-    if not relationships:
-        cursor.close()
-        conn.close()
-        return jsonify({'success': False, 'error': 'You are not authorized to manage this driver'})
-    
-    # Update driver suspension status
-    suspended = 1 if action == 'suspend' else 0
-    cursor.execute('''
-        UPDATE users
-        SET suspended = %s, suspension_message = %s
-        WHERE id = %s
-    ''', (suspended, message, driver_id))
+    cursor.execute("""
+        UPDATE vehicle_sessions SET session_end = %s WHERE id = %s
+    """, (datetime.now(), session_id))
     conn.commit()
     cursor.close()
     conn.close()
-    
-    return jsonify({
-        'success': True, 
-        'message': f'Driver {"suspended" if suspended else "unsuspended"} successfully'
-    })
+    return jsonify({'success': True, 'message': 'Assignment ended'})
 
-@app.route('/api/check_suspension/<int:driver_id>', methods=['GET'])
-def check_suspension(driver_id):
-    # This endpoint is called by the driver module to check suspension status
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute('''
-        SELECT suspended, suspension_message
-        FROM users
-        WHERE id = %s
-    ''', (driver_id,))
-    result = cursor.fetchall()  # Use fetchall() to ensure all results are consumed
-    cursor.close()
-    conn.close()
-    
-    if not result:
-        return jsonify({'success': False, 'error': 'Driver not found'})
-        
-    # Return the first (and likely only) result
-    driver_data = result[0]
-    return jsonify({
-        'success': True,
-        'suspended': bool(driver_data['suspended']),
-        'message': driver_data['suspension_message'] or ''
-    })
-
-# Add new endpoint for vehicle registration
-@app.route('/api/register_vehicle/<int:driver_id>', methods=['POST'])
-def register_vehicle(driver_id):
-    """API endpoint to register vehicle details for a driver monitoring session"""
-    try:
-        # Parse the data
-        data = request.json
-        vehicle_name = data.get('vehicle_name')
-        license_plate = data.get('license_plate')
-        session_start = data.get('session_start')
-        
-        if not session_start:
-            # Default to current time if not provided
-            session_start = datetime.now().isoformat()
-            
-        # Connect to database
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        
-        # Check if driver exists
-        cursor.execute("SELECT id FROM users WHERE id = %s AND user_type = 'driver'", (driver_id,))
-        driver = cursor.fetchone()
-        
-        if not driver:
-            cursor.close()
-            conn.close()
-            return jsonify({'success': False, 'error': 'Driver not found'}), 404
-            
-        # Check if we need to create vehicle_sessions table
-        try:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS vehicle_sessions (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    driver_id INT NOT NULL,
-                    vehicle_name VARCHAR(100),
-                    license_plate VARCHAR(20),
-                    session_start DATETIME NOT NULL,
-                    session_end DATETIME,
-                    FOREIGN KEY (driver_id) REFERENCES users(id) ON DELETE CASCADE
-                )
-            """)
-            conn.commit()
-        except Exception as e:
-            print(f"Error creating vehicle_sessions table: {e}")
-            # Continue anyway as the table might already exist
-        
-        # Insert the new vehicle session
-        try:
-            cursor.execute("""
-                INSERT INTO vehicle_sessions 
-                (driver_id, vehicle_name, license_plate, session_start) 
-                VALUES (%s, %s, %s, %s)
-            """, (driver_id, vehicle_name, license_plate, session_start))
-            conn.commit()
-            
-            session_id = cursor.lastrowid
-            
-            # Return success response with session ID
-            response = {
-                'success': True, 
-                'message': 'Vehicle details registered successfully',
-                'session_id': session_id
-            }
-            
-            cursor.close()
-            conn.close()
-            return jsonify(response), 200
-            
-        except Exception as e:
-            print(f"Error inserting vehicle session: {e}")
-            cursor.close()
-            conn.close()
-            return jsonify({'success': False, 'error': str(e)}), 500
-        
-    except Exception as e:
-        print(f"Error in register_vehicle endpoint: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/driver_vehicle/<int:driver_id>')
-def api_driver_vehicle(driver_id):
-    """API endpoint to get vehicle information for a driver"""
+@app.route('/api/driver_vehicle_assignments/<int:driver_id>')
+def get_driver_vehicle_assignments(driver_id):
+    """Get all vehicle assignments (past, current, future) for a driver."""
     if 'user_id' not in session:
-        return jsonify({"success": False, "error": "Not authenticated"}), 401
-    
-    # Check permissions
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
     if session['user_type'] == 'owner':
-        # Owner can check any of their drivers
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute("""
             SELECT EXISTS(
-                SELECT 1 FROM driver_owner 
-                WHERE driver_id = %s AND owner_id = %s
+                SELECT 1 FROM driver_owner WHERE driver_id = %s AND owner_id = %s
             ) as is_associated
         """, (driver_id, session['user_id']))
-        
         result = cursor.fetchone()
         if not result or not result['is_associated']:
             cursor.close()
             conn.close()
-            return jsonify({"success": False, "error": "Not authorized to view this driver"}), 403
+            return jsonify({'success': False, 'error': 'Not authorized'}), 403
     elif session['user_type'] == 'driver':
-        # Drivers can only check themselves
         if driver_id != session['user_id']:
-            return jsonify({"success": False, "error": "Not authorized to view this driver"}), 403
-    
-    # Get vehicle info from database
+            return jsonify({'success': False, 'error': 'Not authorized'}), 403
+
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
@@ -1894,23 +891,248 @@ def api_driver_vehicle(driver_id):
         FROM vehicle_sessions
         WHERE driver_id = %s
         ORDER BY session_start DESC
-        LIMIT 1
     """, (driver_id,))
-    
+    assignments = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    for a in assignments:
+        if a.get('session_start'):
+            a['session_start'] = a['session_start'].isoformat()
+        if a.get('session_end'):
+            a['session_end'] = a['session_end'].isoformat() if a['session_end'] else None
+    return jsonify({'success': True, 'assignments': assignments})
+
+# --- API endpoints for dashboard AJAX requests ---
+
+@app.route('/api/alert_count')
+def api_alert_count():
+    if 'user_id' not in session or session['user_type'] != 'owner':
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT COUNT(*) FROM alerts a
+        JOIN driver_owner do ON a.user_id = do.driver_id
+        WHERE do.owner_id = %s
+        AND a.alert_type != 'status_update'
+    """, (session['user_id'],))
+    count = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
+    return jsonify({'success': True, 'count': count})
+
+@app.route('/api/recent_alerts')
+def api_recent_alerts():
+    if 'user_id' not in session or session['user_type'] != 'owner':
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT a.id, a.user_id, a.alert_type, a.timestamp, u.username
+        FROM alerts a
+        JOIN users u ON a.user_id = u.id
+        JOIN driver_owner do ON u.id = do.driver_id
+        WHERE do.owner_id = %s
+        AND a.alert_type != 'status_update'
+        ORDER BY a.timestamp DESC
+        LIMIT 10
+    """, (session['user_id'],))
+    alerts = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return jsonify({'success': True, 'alerts': alerts})
+
+@app.route('/api/driver_vehicle/<int:driver_id>')
+def api_driver_vehicle(driver_id):
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    # Owner can view their drivers, driver can view self
+    if session['user_type'] == 'owner':
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT EXISTS(
+                SELECT 1 FROM driver_owner WHERE driver_id = %s AND owner_id = %s
+            ) as is_associated
+        """, (driver_id, session['user_id']))
+        result = cursor.fetchone()
+        if not result or not result['is_associated']:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Not authorized'}), 403
+    elif session['user_type'] == 'driver':
+        if driver_id != session['user_id']:
+            return jsonify({'success': False, 'error': 'Not authorized'}), 403
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT id, vehicle_name, license_plate, session_start, session_end
+            FROM vehicle_sessions
+            WHERE driver_id = %s
+            ORDER BY session_end IS NULL DESC, session_start DESC
+            LIMIT 1
+        """, (driver_id,))
+        vehicle = cursor.fetchone()
+    except Exception as e:
+        vehicle = None
+    cursor.close()
+    conn.close()
+    # Always return success, even if vehicle is None
+    return jsonify({'success': True, 'vehicle': vehicle})
+
+@app.route('/api/risk_level/<int:driver_id>')
+def api_risk_level(driver_id):
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    # Owner can view their drivers, driver can view self
+    if session['user_type'] == 'owner':
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT EXISTS(
+                SELECT 1 FROM driver_owner WHERE driver_id = %s AND owner_id = %s
+            ) as is_associated
+        """, (driver_id, session['user_id']))
+        result = cursor.fetchone()
+        if not result or not result['is_associated']:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Not authorized'}), 403
+    elif session['user_type'] == 'driver':
+        if driver_id != session['user_id']:
+            return jsonify({'success': False, 'error': 'Not authorized'}), 403
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT risk_level FROM users WHERE id = %s", (driver_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    risk_level = row['risk_level'] if row and row['risk_level'] is not None else 0
+    risk_labels = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    return jsonify({'success': True, 'risk_level': risk_level, 'risk_label': risk_labels[risk_level]})
+
+@app.route('/api/driver_module_status/<int:driver_id>')
+def api_driver_module_status(driver_id):
+    # Dummy implementation: always inactive
+    # Replace with real status check if available
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    # Owner can view their drivers, driver can view self
+    if session['user_type'] == 'owner':
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT EXISTS(
+                SELECT 1 FROM driver_owner WHERE driver_id = %s AND owner_id = %s
+            ) as is_associated
+        """, (driver_id, session['user_id']))
+        result = cursor.fetchone()
+        if not result or not result['is_associated']:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Not authorized'}), 403
+        cursor.close()
+        conn.close()
+    elif session['user_type'] == 'driver':
+        if driver_id != session['user_id']:
+            return jsonify({'success': False, 'error': 'Not authorized'}), 403
+    # For demo, always return inactive
+    return jsonify({'success': True, 'is_active': False})
+
+@app.route('/api/add_vehicle', methods=['POST'])
+def api_add_vehicle():
+    if 'user_id' not in session or session['user_type'] != 'owner':
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    data = request.get_json()
+    vehicle_name = data.get('vehicle_name', '').strip()
+    license_plate = data.get('license_plate', '').strip()
+    if not vehicle_name or not license_plate:
+        return jsonify({'success': False, 'error': 'Vehicle name and number plate are required.'}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    # Ensure vehicles table exists
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS vehicles (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                owner_id INT NOT NULL,
+                vehicle_name VARCHAR(100) NOT NULL,
+                license_plate VARCHAR(50) NOT NULL,
+                UNIQUE(owner_id, license_plate),
+                FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+        conn.commit()
+    except Exception as e:
+        print(f"Error ensuring vehicles table: {e}")
+
+    # Check for duplicate
+    cursor.execute("SELECT id FROM vehicles WHERE owner_id = %s AND license_plate = %s", (session['user_id'], license_plate))
+    if cursor.fetchone():
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': 'A vehicle with this number plate already exists.'}), 409
+
+    try:
+        cursor.execute(
+            "INSERT INTO vehicles (owner_id, vehicle_name, license_plate) VALUES (%s, %s, %s)",
+            (session['user_id'], vehicle_name, license_plate)
+        )
+        conn.commit()
+        vehicle_id = cursor.lastrowid
+        cursor.execute("SELECT id, vehicle_name, license_plate FROM vehicles WHERE id = %s", (vehicle_id,))
+        vehicle = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return jsonify({'success': True, 'vehicle': vehicle})
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/alert_details/<int:alert_id>')
+def api_alert_details(alert_id):
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    # Get alert and driver info
+    cursor.execute("""
+        SELECT a.*, u.username, u.email
+        FROM alerts a
+        JOIN users u ON a.user_id = u.id
+        WHERE a.id = %s
+    """, (alert_id,))
+    alert = cursor.fetchone()
+    if not alert:
+        cursor.close()
+        conn.close()
+        return jsonify({'success': False, 'error': 'Alert not found'}), 404
+
+    # Get vehicle info for the driver at the alert time
+    cursor.execute("""
+        SELECT vehicle_name, license_plate, session_start, session_end
+        FROM vehicle_sessions
+        WHERE driver_id = %s
+        AND session_start <= %s
+        AND (session_end IS NULL OR session_end >= %s)
+        ORDER BY session_start DESC
+        LIMIT 1
+    """, (alert['user_id'], alert['timestamp'], alert['timestamp']))
     vehicle = cursor.fetchone()
     cursor.close()
     conn.close()
-    
-    if not vehicle:
-        return jsonify({"success": True, "vehicle": None})
-    
-    # Format datetime objects for JSON serialization
-    if vehicle.get('session_start'):
-        vehicle['session_start'] = vehicle['session_start'].isoformat()
-    if vehicle.get('session_end'):
-        vehicle['session_end'] = vehicle['session_end'].isoformat()
-    
-    return jsonify({"success": True, "vehicle": vehicle})
+    # Format datetimes for frontend
+    if vehicle:
+        if vehicle.get('session_start'):
+            vehicle['session_start'] = vehicle['session_start'].isoformat()
+        if vehicle.get('session_end'):
+            vehicle['session_end'] = vehicle['session_end'].isoformat() if vehicle['session_end'] else None
+    return jsonify({'success': True, 'alert': alert, 'vehicle': vehicle})
 
 if __name__ == '__main__':
     app.run(debug=True, host="0.0.0.0")
